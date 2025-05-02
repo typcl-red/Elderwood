@@ -242,6 +242,7 @@ $presentations = $stmt->fetchAll();
     <?php include 'includes/supplier_sidebar.php'; ?>
 
     <div class="main-content">
+        
         <div class="inventory-header">
             <h1>Product Presentations</h1>
         </div>
