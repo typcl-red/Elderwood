@@ -1,0 +1,5 @@
+[25-Mar-2025 08:41:49 Europe/Berlin] PHP Warning:  require_once(includes/db_connect.php): Failed to open stream: No such file or directory in C:\XAMPP\htdocs\Elwood\get_receipt_details.php on line 12
+[25-Mar-2025 08:41:49 Europe/Berlin] PHP Fatal error:  Uncaught Error: Failed opening required 'includes/db_connect.php' (include_path='C:\XAMPP\php\PEAR') in C:\XAMPP\htdocs\Elwood\get_receipt_details.php:12
+Stack trace:
+#0 {main}
+  thrown in C:\XAMPP\htdocs\Elwood\get_receipt_details.php on line 12
