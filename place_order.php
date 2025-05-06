@@ -35,43 +35,23 @@ try {
 
     // Check if this product is already in the order list
     $stmt = $pdo->prepare("
-        SELECT order_id 
+        SELECT order_id, status, product_name, length_feet, width_feet, height_feet 
         FROM order_list 
         WHERE buyer_id = ? 
         AND product_name = ?
-        AND status = 'Pending'
+        AND status = ?
     ");
 
     $stmt->execute([
         $_SESSION['user_id'],
-        $data['product_name']
+        $data['product_name'],
+        'pending'
     ]);
 
     $existingOrder = $stmt->fetch(PDO::FETCH_ASSOC);
 
-    if ($existingOrder) {
-        // Update the existing order with new specifications
-        $stmt = $pdo->prepare("
-            UPDATE order_list 
-            SET status = 'Ordered',
-                length_feet = ?,
-                width_feet = ?,
-                height_feet = ?,
-                quantity = ?
-            WHERE order_id = ?
-        ");
-
-        $stmt->execute([
-            $data['length_feet'],
-            $data['width_feet'],
-            $data['height_feet'],
-            $data['quantity'],
-            $existingOrder['order_id']
-        ]);
-
-        $orderId = $existingOrder['order_id'];
-    } else {
-        // Create a new order
+    if (!$existingOrder) {
+        // Insert new order if none exists
         $stmt = $pdo->prepare("
             INSERT INTO order_list (
                 buyer_id,
@@ -80,9 +60,10 @@ try {
                 width_feet,
                 height_feet,
                 quantity,
-                status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'Ordered')
-        ");
+                status,
+                created_at,
+                status_updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)");
 
         $stmt->execute([
             $_SESSION['user_id'],
@@ -94,11 +75,22 @@ try {
         ]);
 
         $orderId = $pdo->lastInsertId();
+    } else {
+        // Update existing order
+        $stmt = $pdo->prepare("
+            UPDATE order_list 
+            SET status = 'Ordered',
+                status_updated_at = CURRENT_TIMESTAMP
+            WHERE order_id = ?
+        ");
+
+        $stmt->execute([$existingOrder['order_id']]);
+        $orderId = $existingOrder['order_id'];
     }
 
     // Create notification message
     $message = sprintf(
-        "New order received!\nProduct: %s\nSize: %s' x %s' x %s'\nQuantity: %d pieces",
+        "Order status updated!\nProduct: %s\nSize: %s' x %s' x %s'\nQuantity: %d pieces",
         $data['product_name'],
         $data['length_feet'],
         $data['width_feet'],

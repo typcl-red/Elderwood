@@ -3,41 +3,30 @@ session_start();
 require_once 'database/config.php';
 
 if (!isset($_SESSION['user_id'])) {
-    echo json_encode(['success' => false, 'message' => 'Unauthorized access']);
+    echo json_encode(['success' => false, 'error' => 'Unauthorized access']);
     exit();
 }
 
-if (!isset($_GET['order_id'])) {
-    echo json_encode(['success' => false, 'message' => 'Order ID is required']);
-    exit();
-}
+$data = json_decode(file_get_contents('php://input'), true);
+$orderId = $data['order_id'] ?? null;
 
 try {
     $stmt = $pdo->prepare("
-        SELECT p.* 
+        SELECT p.*, r.receipt_number
         FROM payments p
-        JOIN receipt r ON p.receipt_id = r.id
-        WHERE r.order_id = ?
+        LEFT JOIN receipt r ON p.receipt_id = r.id
+        WHERE p.order_id = :order_id
     ");
     
-    $stmt->execute([$_GET['order_id']]);
+    $stmt->execute(['order_id' => $orderId]);
     $payment = $stmt->fetch(PDO::FETCH_ASSOC);
-
+    
     if ($payment) {
-        echo json_encode([
-            'success' => true,
-            'payment' => $payment
-        ]);
+        echo json_encode(['success' => true, 'payment' => $payment]);
     } else {
-        echo json_encode([
-            'success' => false,
-            'message' => 'Payment not found'
-        ]);
+        echo json_encode(['success' => false, 'error' => 'Payment not found']);
     }
 } catch (PDOException $e) {
-    echo json_encode([
-        'success' => false,
-        'message' => 'Database error: ' . $e->getMessage()
-    ]);
+    echo json_encode(['success' => false, 'error' => 'Database error']);
 }
 ?>

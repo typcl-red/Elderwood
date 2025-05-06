@@ -1176,12 +1176,6 @@ $orders = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 </a>
             </li>
             <li>
-                <a href="buyer_profile.php">
-                    <i class="fas fa-user"></i>
-                    <span>Profile</span>
-                </a>
-            </li>
-            <li>
                 <a href="order_list.php">
                     <i class="fas fa-list-alt"></i>
                     <span>Order List</span>

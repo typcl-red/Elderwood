@@ -23,12 +23,6 @@
             </a>
         </li>
         <li>
-            <a href="buyer_profile.php">
-                <i class="fas fa-user"></i>
-                <span class="link_name">Profile</span>
-            </a>
-        </li>
-        <li>
             <a href="logout.php">
                 <i class="fas fa-sign-out-alt"></i>
                 <span class="link_name">Logout</span>

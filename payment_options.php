@@ -2,288 +2,58 @@
 session_start();
 require_once 'database/config.php';
 
-// Check if user is logged in
 if (!isset($_SESSION['user_id'])) {
     header('Location: login.php');
     exit();
 }
 
-// Get user details
-$userId = $_SESSION['user_id'];
-$stmt = $pdo->prepare("SELECT * FROM users WHERE id = ?");
-$stmt->execute([$userId]);
-$userDetails = $stmt->fetch();
-
-// Check if receipt ID is provided
 if (!isset($_GET['receipt_id'])) {
-    header("Location: order_list.php");
+    header('Location: order_list.php');
     exit();
 }
 
-$receiptId = $_GET['receipt_id'];
+$receipt_id = $_GET['receipt_id'];
 
-// Get receipt details with seller's GCash information
-$stmt = $pdo->prepare("
-    SELECT r.*, o.product_name, o.length_feet, o.width_feet, o.height_feet, o.quantity, 
-           CONCAT(u.firstname, ' ', u.lastname) AS buyer_name,
-           CONCAT(s.firstname, ' ', s.lastname) AS seller_name,
-           g.gcash_name, g.gcash_number, g.gcash_qr
-    FROM receipt r
-    JOIN order_list o ON r.order_id = o.order_id
-    JOIN users u ON o.buyer_id = u.id
-    JOIN users s ON r.seller_id = s.id
-    LEFT JOIN gcash g ON r.seller_id = g.seller_id
-    WHERE r.id = ? AND o.buyer_id = ?
-");
-$stmt->execute([$receiptId, $userId]);
-$receipt = $stmt->fetch();
-
-if (!$receipt) {
-    header("Location: order_list.php");
-    exit();
-}
-
-// Process payment form submission
-$paymentMessage = '';
-$paymentSuccess = false;
-$errorMessage = '';
-
-// Add this near the top of the file, after session_start()
-ini_set('display_errors', 1);
-error_reporting(E_ALL);
-
-// Add this in the POST handling section
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!isset($_POST['payment_method']) || empty($_POST['payment_method'])) {
-        $errorMessage = "Payment method not selected";
-    } else {
-        $paymentMethod = $_POST['payment_method'];
-        $paymentStatus = 'pending';
-        
-        try {
-            $pdo->beginTransaction();
-            
-            // Validate pickup information first
-            if ($paymentMethod === 'pickup') {
-                if (empty($_POST['pickup_date']) || empty($_POST['pickup_time']) || empty($_POST['pickup_contact'])) {
-                    throw new Exception("All pickup information is required");
-                }
-                
-                // Validate date
-                $pickupDate = new DateTime($_POST['pickup_date']);
-                $today = new DateTime();
-                $today->setTime(0, 0, 0);
-                
-                if ($pickupDate < $today) {
-                    throw new Exception("Pickup date cannot be in the past");
-                }
-            }
-            
-            // Generate reference number
-            $referenceNumber = strtoupper(substr($paymentMethod, 0, 2)) . time() . rand(1000, 9999);
-            
-            // In the POST handling section, modify the SQL query construction
-            $sql = "INSERT INTO payments (
-                receipt_id, 
-                payment_method, 
-                reference_number, 
-                payment_status, 
-                payment_date, 
-                gcash_number, 
-                gcash_name, 
-                screenshot_path, 
-                delivery_address, 
-                delivery_notes, 
-                pickup_date, 
-                pickup_time, 
-                contact_number,
-                product_notes
-            ) VALUES (
-                :receipt_id, 
-                :payment_method, 
-                :reference_number, 
-                :payment_status, 
-                NOW(),
-                :gcash_number, 
-                :gcash_name, 
-                :screenshot_path, 
-                :delivery_address, 
-                :delivery_notes, 
-                :pickup_date, 
-                :pickup_time, 
-                :contact_number,
-                :product_notes
-            )";
-            
-            // Initialize all parameters with NULL
-            $params = [
-                ':receipt_id' => $receiptId,
-                ':payment_method' => $paymentMethod,
-                ':reference_number' => $referenceNumber,
-                ':payment_status' => $paymentStatus,
-                ':gcash_number' => NULL,
-                ':gcash_name' => NULL,
-                ':screenshot_path' => NULL,
-                ':delivery_address' => NULL,
-                ':delivery_notes' => NULL,
-                ':pickup_date' => NULL,
-                ':pickup_time' => NULL,
-                ':contact_number' => NULL,
-                ':product_notes' => NULL  // Add this line
-            ];
-            
-            // Update specific parameters based on payment method
-            switch($paymentMethod) {
-                case 'gcash':
-                    $params[':gcash_number'] = $_POST['gcash_number'] ?? null;
-                    $params[':gcash_name'] = $_POST['gcash_name'] ?? null;
-                    $params[':contact_number'] = $_POST['gcash_number'] ?? null;
-                    $params[':product_notes'] = $_POST['product_notes'] ?? null;  // Add this line
-                    
-                    if (isset($_FILES['payment_screenshot']) && $_FILES['payment_screenshot']['error'] === UPLOAD_ERR_OK) {
-                        $uploadDir = 'uploads/payments/';
-                        if (!file_exists($uploadDir)) {
-                            mkdir($uploadDir, 0777, true);
-                        }
-                        $fileName = time() . '_' . $_FILES['payment_screenshot']['name'];
-                        $filePath = $uploadDir . $fileName;
-                        if (move_uploaded_file($_FILES['payment_screenshot']['tmp_name'], $filePath)) {
-                            $params[':screenshot_path'] = $filePath;
-                        }
-                    }
-                    break;
-            
-                case 'cod':
-                    $params[':delivery_address'] = $_POST['delivery_address'] ?? null;
-                    $params[':delivery_notes'] = $_POST['delivery_notes'] ?? '';
-                    $params[':contact_number'] = $_POST['contact_number'] ?? null;
-                    $params[':product_notes'] = $_POST['product_notes'] ?? null;  // Add this line
-                    break;
-            
-                case 'pickup':
-                    // Validate pickup date and time
-                    $pickupDate = $_POST['pickup_date'] ?? null;
-                    $pickupTime = $_POST['pickup_time'] ?? null;
-                    $contactNumber = $_POST['pickup_contact'] ?? null;
-
-                    if (!$pickupDate || !$pickupTime || !$contactNumber) {
-                        throw new Exception("All pickup information is required");
-                    }
-
-                    $params[':pickup_date'] = $pickupDate;
-                    $params[':pickup_time'] = $pickupTime;
-                    $params[':contact_number'] = $contactNumber;
-                    $params[':product_notes'] = $_POST['product_notes'] ?? null;  // Add this line
-                    break;
-            }
-
-            // Just prepare and execute the SQL query
-            $stmt = $pdo->prepare($sql);
-            try {
-                $stmt->execute($params);
-            } catch (PDOException $e) {
-                error_log('SQL Error: ' . $e->getMessage());
-                throw $e;
-            }
-
-            // Update order status based on payment method
-            $newStatus = $paymentMethod === 'pickup' ? 'Pickup Pending' : 'Payment Pending';
-            $stmtOrder = $pdo->prepare("
-                UPDATE order_list 
-                SET status = :status 
-                WHERE order_id = :order_id
-            ");
-            $stmtOrder->execute([
-                ':status' => $newStatus,
-                ':order_id' => $receipt['order_id']
-            ]);
-
-            // After successful payment insertion and before commit
-            try {
-                // Insert into daily_sales table
-                $salesSql = "INSERT INTO daily_sales (
-                    seller_id,
-                    seller_name,
-                    sale_date,
-                    product_name,
-                    length_feet,
-                    width_feet,
-                    height_feet,
-                    quantity,
-                    total_amount,
-                    created_at
-                ) VALUES (
-                    :seller_id,
-                    :seller_name,
-                    CURRENT_DATE(),
-                    :product_name,
-                    :length_feet,
-                    :width_feet,
-                    :height_feet,
-                    :quantity,
-                    :total_amount,
-                    CURRENT_TIMESTAMP
-                )";
-
-                $salesStmt = $pdo->prepare($salesSql);
-                $salesStmt->execute([
-                    ':seller_id' => $receipt['seller_id'],
-                    ':seller_name' => $receipt['seller_name'],
-                    ':product_name' => $receipt['product_name'],
-                    ':length_feet' => $receipt['length_feet'],
-                    ':width_feet' => $receipt['width_feet'],
-                    ':height_feet' => $receipt['height_feet'],
-                    ':quantity' => $receipt['quantity'],
-                    ':total_amount' => $receipt['total_amount']
-                ]);
-
-                // Update inventory quantity
-                $updateInventorySql = "UPDATE product_inventory 
-                    SET quantity = quantity - :sold_quantity 
-                    WHERE seller_id = :seller_id 
-                    AND product_name = :product_name
-                    AND length_feet = :length_feet
-                    AND width_feet = :width_feet
-                    AND height_feet = :height_feet";
-
-                $updateInventoryStmt = $pdo->prepare($updateInventorySql);
-                $updateInventoryStmt->execute([
-                    ':sold_quantity' => $receipt['quantity'],
-                    ':seller_id' => $receipt['seller_id'],
-                    ':product_name' => $receipt['product_name'],
-                    ':length_feet' => $receipt['length_feet'],
-                    ':width_feet' => $receipt['width_feet'],
-                    ':height_feet' => $receipt['height_feet']
-                ]);
-
-                $pdo->commit();
-                
-                $_SESSION['payment_success'] = true;
-                $_SESSION['payment_message'] = "Payment processed successfully. Reference #: " . $referenceNumber;
-                
-                header("Location: order_list.php");
-                exit;
-
-            } catch (PDOException $e) {
-                $pdo->rollBack();
-                $errorMessage = "Database error occurred. Please try again.";
-                error_log('Payment Error: ' . $e->getMessage());
-            }
-        } catch (Exception $e) {
-            $pdo->rollBack();
-            $errorMessage = $e->getMessage();
-            error_log('Validation Error: ' . $e->getMessage());
-        }
+// Add buyer details to the SQL query
+try {
+    $stmt = $pdo->prepare("
+        SELECT r.*, 
+               u.firstname as seller_firstname, 
+               u.lastname as seller_lastname,
+               u.contactno as seller_contact,
+               u.address as seller_address,
+               ol.product_name,
+               ol.length_feet,
+               ol.width_feet,
+               ol.height_feet,
+               ol.quantity,
+               ol.order_id,
+               b.firstname as buyer_firstname,
+               b.lastname as buyer_lastname,
+               b.contactno as buyer_contact,
+               b.address as buyer_address
+        FROM receipt r
+        JOIN users u ON r.seller_id = u.id
+        JOIN order_list ol ON r.order_id = ol.order_id
+        JOIN users b ON ol.buyer_id = b.id
+        WHERE r.id = :receipt_id AND ol.buyer_id = :buyer_id
+    ");
+    
+    $stmt->execute([
+        'receipt_id' => $receipt_id,
+        'buyer_id' => $_SESSION['user_id']
+    ]);
+    
+    $order = $stmt->fetch(PDO::FETCH_ASSOC);
+    
+    if (!$order) {
+        header('Location: order_list.php');
+        exit();
     }
+} catch (PDOException $e) {
+    header('Location: order_list.php');
+    exit();
 }
-
-// Format the size string
-$sizeStr = $receipt['length_feet'] . "' x " . $receipt['width_feet'] . "' x " . $receipt['height_feet'] . "'";
-
-// Format the date
-$receiptDate = new DateTime($receipt['receipt_date']);
-$formattedDate = $receiptDate->format('m/d/Y');
-$formattedTime = $receiptDate->format('h:i A');
 ?>
 
 <!DOCTYPE html>
@@ -291,538 +61,287 @@ $formattedTime = $receiptDate->format('h:i A');
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Payment Options - Elwood</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
+    <title>Payment Options - ElderWood</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        :root {
+            --primary-brown: #8B4513;
+            --secondary-brown: #A0522D;
+            --light-brown: #DEB887;
+            --bg-brown: #FFF8DC;
         }
 
         body {
-            background-color: #f5f5f5;
-            color: #333;
-        }
-
-        .container {
-            max-width: 800px;
-            margin: 50px auto;
+            font-family: Arial, sans-serif;
+            background-color: var(--bg-brown);
+            margin: 0;
             padding: 20px;
-            background-color: #fff;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
         }
 
-        /* Back button styles */
-        .back-button {
-            position: fixed;
-            top: 20px;
-            left: 20px;
-            background-color: #8B4513;
-            color: white;
-            border: none;
-            border-radius: 50%;
-            width: 40px;
-            height: 40px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            cursor: pointer;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
-            z-index: 100;
-            transition: all 0.3s ease;
-            text-decoration: none; /* Add this line to remove the underline */
-        }
-
-        .back-button:hover {
-            background-color: #A0522D;
-            transform: scale(1.1);
-        }
-
-        .header {
-            text-align: center;
-            margin-bottom: 30px;
-        }
-
-        .header h1 {
-            color: #8B4513;
-            margin-bottom: 10px;
-        }
-
-        .receipt-summary {
-            background-color: #f9f9f9;
+        .payment-container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: white;
             padding: 20px;
             border-radius: 8px;
-            margin-bottom: 30px;
-            border: 1px solid #eee;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
 
-        .receipt-row {
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 10px;
-            padding-bottom: 10px;
-            border-bottom: 1px solid #eee;
-        }
-
-        .receipt-row:last-child {
-            border-bottom: none;
-        }
-
-        .receipt-total {
-            font-weight: bold;
-            color: #8B4513;
-            font-size: 1.2em;
-            margin-top: 15px;
-            padding-top: 15px;
-            border-top: 2px dashed #ddd;
-        }
-
-        .payment-options {
-            margin-top: 30px;
-        }
-
-        .payment-title {
-            font-size: 1.2em;
-            color: #333;
+        .order-details {
             margin-bottom: 20px;
-            text-align: center;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #ddd;
         }
 
-        .payment-methods {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 20px;
-            justify-content: center;
-        }
-
-        .payment-method {
-            flex: 1;
-            min-width: 200px;
-            padding: 20px;
-            border: 2px solid #ddd;
-            border-radius: 8px;
-            text-align: center;
-            cursor: pointer;
-            transition: all 0.3s ease;
-        }
-
-        .payment-method:hover {
-            border-color: #8B4513;
-            transform: translateY(-2px);
-            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-        }
-
-        .payment-method.selected {
-            border-color: #8B4513;
-            background-color: #fff8f3;
-        }
-
-        .payment-method i {
-            font-size: 2em;
-            color: #8B4513;
-            margin-bottom: 10px;
-        }
-
-        .payment-form {
-            margin-top: 30px;
-            padding: 20px;
-            border: 1px solid #ddd;
-            border-radius: 8px;
-        }
-
-        .gcash-form, .cod-form {
-            display: none;
-            margin-top: 20px;
-        }
-
-        .form-group {
+        .order-details h2 {
+            color: var(--primary-brown);
             margin-bottom: 15px;
         }
 
-        .form-group label {
-            display: block;
-            margin-bottom: 5px;
-            color: #333;
+        .detail-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+            padding: 5px 0;
         }
 
-        .form-control {
+        .detail-label {
+            font-weight: bold;
+            color: var(--secondary-brown);
+        }
+
+        .payment-options {
+            margin-top: 20px;
+        }
+
+        .payment-options h3 {
+            color: var(--primary-brown);
+            margin-bottom: 15px;
+        }
+
+        select {
             width: 100%;
-            padding: 8px;
+            padding: 10px;
+            margin-bottom: 20px;
             border: 1px solid #ddd;
             border-radius: 4px;
-            font-size: 14px;
         }
 
-        .btn {
-            padding: 10px 20px;
+        .submit-btn {
+            background-color: var(--primary-brown);
+            color: white;
+            padding: 12px 24px;
             border: none;
             border-radius: 4px;
             cursor: pointer;
-            font-size: 14px;
-            transition: all 0.3s ease;
+            width: 100%;
+            font-size: 16px;
         }
 
-        .btn-secondary {
-            background-color: #6c757d;
-            color: white;
-            margin-right: 10px;
+        .submit-btn:hover {
+            background-color: var(--secondary-brown);
         }
 
-        .btn:not(:disabled) {
-            background-color: #8B4513;
-            color: white;
-        }
-
-        .btn:disabled {
-            background-color: #ddd;
-            cursor: not-allowed;
-        }
-
-        .buttons {
-            margin-top: 20px;
-            text-align: right;
-        }
-
-        .qr-code {
-            margin: 20px 0;
-            text-align: center;
-        }
-
-        .qr-code img {
-            max-width: 200px;
-            height: auto;
-        }
-
-        .gcash-number {
-            background-color: #f8f9fa;
-            padding: 15px;
-            border-radius: 4px;
-            margin: 15px 0;
+        .total-amount {
+            font-size: 1.2em;
+            font-weight: bold;
+            color: var(--primary-brown);
         }
     </style>
-    
-    <div class="container">
-        <a href="order_list.php" class="back-button">
-            <i class="fas fa-arrow-left"></i>
-        </a>
-
-        <div class="header">
-            <h1>Payment Options</h1>
-            <?php if (!empty($errorMessage)): ?>
-                <div class="error-message" style="color: red; background-color: #ffeeee; padding: 10px; border-radius: 5px; margin-top: 10px;">
-                    <strong>Error:</strong> <?php echo htmlspecialchars($errorMessage); ?>
-                </div>
-            <?php endif; ?>
-        </div>
-
-        <div class="receipt-summary">
-            <div class="receipt-row">
-                <span>Product:</span>
-                <span><?php echo htmlspecialchars($receipt['product_name']); ?></span>
+</head>
+<body>
+    <div class="payment-container">
+        <div class="order-details">
+            <h2>Order Details</h2>
+            <div class="detail-row">
+                <span class="detail-label">Product:</span>
+                <span><?php echo htmlspecialchars($order['product_name']); ?></span>
             </div>
-            <div class="receipt-row">
-                <span>Size:</span>
-                <span><?php echo htmlspecialchars($sizeStr); ?></span>
+            <div class="detail-row">
+                <span class="detail-label">Size:</span>
+                <span><?php echo htmlspecialchars($order['length_feet'] . "' x " . $order['width_feet'] . "' x " . $order['height_feet'] . "'"); ?></span>
             </div>
-            <div class="receipt-row">
-                <span>Quantity:</span>
-                <span><?php echo htmlspecialchars($receipt['quantity']); ?></span>
+            <div class="detail-row">
+                <span class="detail-label">Quantity:</span>
+                <span><?php echo htmlspecialchars($order['quantity']); ?> pieces</span>
             </div>
-            <div class="receipt-row">
-                <span>Seller:</span>
-                <span><?php echo htmlspecialchars($receipt['seller_name']); ?></span>
+            <div class="detail-row">
+                <span class="detail-label">Seller:</span>
+                <span><?php echo htmlspecialchars($order['seller_firstname'] . ' ' . $order['seller_lastname']); ?></span>
             </div>
-            <div class="receipt-total">
-                <span>Total Amount:</span>
-                <span>₱<?php echo number_format($receipt['total_amount'], 2); ?></span>
+            <div class="detail-row">
+                <span class="detail-label">Total Amount:</span>
+                <span class="total-amount">₱<?php echo number_format($order['total_amount'], 2); ?></span>
             </div>
         </div>
 
         <div class="payment-options">
-            <h2 class="payment-title">Select Payment Method</h2>
-            <div class="payment-methods">
-                <div class="payment-method" id="gcash-option" onclick="selectPaymentMethod('gcash')">
-                    <i class="fas fa-mobile-alt"></i>
-                    <h3>GCash</h3>
-                    <p>Pay securely using your GCash account</p>
+            <h3>Select Payment Method</h3>
+            <form id="paymentForm" onsubmit="return processPayment(event)" enctype="multipart/form-data">
+                <input type="hidden" name="receipt_id" value="<?php echo $receipt_id; ?>">
+                <input type="hidden" name="order_id" value="<?php echo $order['order_id']; ?>">
+                <input type="hidden" name="amount" value="<?php echo $order['total_amount']; ?>">
+                
+                <select name="payment_method" id="paymentMethod" onchange="toggleGcashDetails(this.value)" required>
+                    <option value="">Select payment method</option>
+                    <option value="Gcash">GCash</option>
+                    <option value="Cash on Delivery">Cash on Delivery</option>
+                    <option value="Store Pickup">Store Pickup</option>
+                </select>
+
+                <div id="gcashDetails" style="display: none;">
+                    <?php
+                    // Fetch GCash details
+                    $gcashStmt = $pdo->prepare("SELECT * FROM gcash WHERE seller_id = ?");
+                    $gcashStmt->execute([$order['seller_id']]);
+                    $gcashDetails = $gcashStmt->fetch(PDO::FETCH_ASSOC);
+                    ?>
+                    <div class="gcash-info">
+                        <h4>GCash Payment Details</h4>
+                        <p><strong>Name:</strong> <?php echo htmlspecialchars($gcashDetails['gcash_name']); ?></p>
+                        <p><strong>Number:</strong> <?php echo htmlspecialchars($gcashDetails['gcash_number']); ?></p>
+                        <p><strong>QR Code:</strong></p>
+                        <img src="<?php echo htmlspecialchars($gcashDetails['gcash_qr']); ?>" alt="GCash QR Code" style="max-width: 200px;">
+                        
+                        <div class="proof-upload">
+                            <p><strong>Upload Payment Screenshot:</strong></p>
+                            <input type="file" name="payment_proof" id="paymentProof" accept="image/*" style="display: none;">
+                            <button type="button" class="upload-btn" onclick="document.getElementById('paymentProof').click()">
+                                <i class="fas fa-upload"></i> Select Screenshot
+                            </button>
+                            <div id="selectedFile" class="selected-file"></div>
+                        </div>
+                    </div>
                 </div>
 
-                <div class="payment-method" id="cod-option" onclick="selectPaymentMethod('cod')">
-                    <i class="fas fa-money-bill-wave"></i>
-                    <h3>Cash on Delivery</h3>
-                    <p>Pay when you receive your product</p>
+                <div id="codDetails" style="display: none;" class="delivery-info">
+                    <h4>Delivery Information</h4>
+                    <div class="buyer-details">
+                        <p><strong>Recipient Name:</strong> <?php echo htmlspecialchars($order['buyer_firstname'] . ' ' . $order['buyer_lastname']); ?></p>
+                        <p><strong>Contact Number:</strong> <?php echo htmlspecialchars($order['buyer_contact']); ?></p>
+                        <p><strong>Delivery Address:</strong> <?php echo htmlspecialchars($order['buyer_address']); ?></p>
+                    </div>
+                    <div class="delivery-note">
+                        <p>* Please prepare the exact amount upon delivery</p>
+                        <p>* Our delivery personnel will contact you before delivery</p>
+                    </div>
                 </div>
 
-                <div class="payment-method" id="pickup-option" onclick="selectPaymentMethod('pickup')">
-                    <i class="fas fa-store"></i>
-                    <h3>Store Pickup</h3>
-                    <p>Pick up your order from our store</p>
+                <div id="storePickupDetails" style="display: none;" class="pickup-info">
+                    <h4>Store Pickup Information</h4>
+                    <div class="seller-details">
+                        <p><strong>Store Owner:</strong> <?php echo htmlspecialchars($order['seller_firstname'] . ' ' . $order['seller_lastname']); ?></p>
+                        <p><strong>Contact Number:</strong> <?php echo htmlspecialchars($order['seller_contact']); ?></p>
+                        <p><strong>Store Address:</strong> <?php echo htmlspecialchars($order['seller_address']); ?></p>
+                    </div>
+                    <div class="pickup-note">
+                        <p>* Please bring a valid ID for verification</p>
+                        <p>* Store hours: 8:00 AM - 5:00 PM (Monday - Saturday)</p>
+                    </div>
                 </div>
-            </div>
+
+                <button type="submit" class="submit-btn">
+                    <i class="fas fa-money-bill-wave"></i> Proceed to Payment
+                </button>
+            </form>
         </div>
 
-        <form id="paymentForm" method="POST" action="<?php echo $_SERVER['PHP_SELF'] . '?receipt_id=' . $receiptId; ?>" class="payment-form" enctype="multipart/form-data">
-            <input type="hidden" name="payment_method" id="paymentMethodInput" value="">
-            
-            <!-- GCash Form -->
-            <div id="gcashForm" class="gcash-form" style="display: none;">
-                <h4>GCash Payment Instructions</h4>
-                <p>Please send the payment to this GCash account:</p>
-                <div class="gcash-number">
-                    <p><strong>Name:</strong> <?php echo htmlspecialchars($receipt['gcash_name'] ?? 'Not available'); ?></p>
-                    <p><strong>Number:</strong> <?php echo htmlspecialchars($receipt['gcash_number'] ?? 'Not available'); ?></p>
-                </div>
-                
-                <div class="qr-code">
-                    <?php if (!empty($receipt['gcash_qr'])): ?>
-                        <img src="<?php echo htmlspecialchars($receipt['gcash_qr']); ?>" alt="GCash QR Code">
-                    <?php else: ?>
-                        <i class="fas fa-qrcode fa-5x"></i>
-                        <p>QR Code not available</p>
-                    <?php endif; ?>
-                </div>
-                
-                <div class="form-group">
-                    <label for="gcashNumber">Your GCash Number</label>
-                    <input type="text" id="gcashNumber" name="gcash_number" class="form-control" placeholder="09XX-XXX-XXXX" required>
-                </div>
-                
-                <div class="form-group">
-                    <label for="gcashName">Name on GCash Account</label>
-                    <input type="text" id="gcashName" name="gcash_name" class="form-control" placeholder="Enter name on GCash account" required>
-                </div>
+        <!-- Add these styles -->
+        <style>
+            .pickup-info {
+                background: #f9f9f9;
+                padding: 15px;
+                border-radius: 8px;
+                margin-bottom: 20px;
+            }
 
-                <div class="form-group">
-                    <label for="paymentScreenshot">Payment Screenshot</label>
-                    <input type="file" id="paymentScreenshot" name="payment_screenshot" class="form-control" accept="image/*" required>
-                    <small class="form-text text-muted">Please upload a screenshot of your GCash payment as proof.</small>
-                </div>
-                
-                <div class="form-group">
-                    <label for="gcashProductNotes">Product Notes (Optional)</label>
-                    <textarea id="gcashProductNotes" name="product_notes" class="form-control" rows="2" placeholder="Any special instructions for your product"></textarea>
-                </div>
-            </div>
-            
-            <!-- COD Form -->
-            <div id="codForm" class="cod-form" style="display: none;">
-                <h4>Cash on Delivery Information</h4>
-                <p>Please confirm your delivery address:</p>
-                
-                <div class="form-group">
-                    <label for="deliveryAddress">Delivery Address</label>
-                    <textarea id="deliveryAddress" name="delivery_address" class="form-control" rows="3" required><?php echo htmlspecialchars($userDetails['address']); ?></textarea>
-                </div>
-                
-                <div class="form-group">
-                    <label for="contactNumber">Contact Number</label>
-                    <input type="text" id="contactNumber" name="contact_number" class="form-control" value="<?php echo htmlspecialchars($userDetails['contactno']); ?>" required>
-                </div>
-                
-                <div class="form-group">
-                    <label for="codProductNotes">Product Notes (Optional)</label>
-                    <textarea id="codProductNotes" name="product_notes" class="form-control" rows="2" placeholder="Any special instructions for your product"></textarea>
-                </div>
-            </div>
+            .seller-details {
+                margin: 15px 0;
+            }
 
-            <!-- Pickup Form -->
-            <div id="pickupForm" class="pickup-form" style="display: none;">
-                <h4>Store Pickup Information</h4>
-                <p>Please select your preferred pickup schedule:</p>
-                
-                <div class="form-group">
-                    <label for="pickupDate">Preferred Pickup Date</label>
-                    <input type="date" id="pickupDate" name="pickup_date" class="form-control" required min="<?php echo date('Y-m-d'); ?>">
-                </div>
-                
-                <div class="form-group">
-                    <label for="pickupTime">Preferred Pickup Time</label>
-                    <select id="pickupTime" name="pickup_time" class="form-control" required>
-                        <option value="">Select time...</option>
-                        <option value="09:00">9:00 AM</option>
-                        <option value="10:00">10:00 AM</option>
-                        <option value="11:00">11:00 AM</option>
-                        <option value="13:00">1:00 PM</option>
-                        <option value="14:00">2:00 PM</option>
-                        <option value="15:00">3:00 PM</option>
-                        <option value="16:00">4:00 PM</option>
-                        <option value="17:00">5:00 PM</option>
-                    </select>
-                </div>
-                
-                <div class="form-group">
-                    <label for="pickupContactNumber">Contact Number</label>
-                    <input type="text" id="pickupContactNumber" name="pickup_contact" class="form-control" value="<?php echo htmlspecialchars($userDetails['contactno']); ?>" required>
-                </div>
-            </div>
-            
-            <div class="buttons">
-                <a href="order_list.php" class="btn btn-secondary">Cancel</a>
-                <button type="submit" class="btn" id="confirmPaymentBtn" disabled>Confirm Payment</button>
-            </div>
-        </form>
-    </div>
+            .seller-details p {
+                margin: 8px 0;
+            }
 
-    <script>
-        // Update the selectPaymentMethod function
-        function selectPaymentMethod(method) {
-            // Remove selected class from all payment methods
-            document.querySelectorAll('.payment-method').forEach(el => {
-                el.classList.remove('selected');
+            .pickup-note {
+                margin-top: 15px;
+                padding-top: 15px;
+                border-top: 1px dashed #ddd;
+                font-size: 0.9em;
+                color: #666;
+            }
+        </style>
+
+        <!-- Add this JavaScript before the closing body tag -->
+        <script>
+        function toggleGcashDetails(method) {
+            const gcashDetails = document.getElementById('gcashDetails');
+            const codDetails = document.getElementById('codDetails');
+            const storePickupDetails = document.getElementById('storePickupDetails');
+            const paymentProof = document.getElementById('paymentProof');
+            
+            // Hide all payment details first
+            gcashDetails.style.display = 'none';
+            codDetails.style.display = 'none';
+            storePickupDetails.style.display = 'none';
+            paymentProof.required = false;
+            
+            // Show relevant details based on payment method
+            if (method === 'Gcash') {
+                gcashDetails.style.display = 'block';
+                paymentProof.required = true;
+            } else if (method === 'Cash on Delivery') {
+                codDetails.style.display = 'block';
+            } else if (method === 'Store Pickup') {
+                storePickupDetails.style.display = 'block';
+            }
+        }
+
+        document.getElementById('paymentProof').addEventListener('change', function(e) {
+            const fileName = e.target.files[0]?.name;
+            document.getElementById('selectedFile').textContent = fileName || '';
+        });
+
+        function processPayment(event) {
+            event.preventDefault();
+            
+            const form = event.target;
+            const formData = new FormData(form);
+            const submitBtn = form.querySelector('.submit-btn');
+            const paymentMethod = formData.get('payment_method');
+            
+            if (paymentMethod === 'Gcash' && !formData.get('payment_proof').size) {
+                alert('Please upload your payment screenshot');
+                return false;
+            }
+            
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
+
+            fetch('process_payment.php', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Payment submitted successfully!');
+                    window.location.href = 'order_list.php';
+                } else {
+                    alert(data.error || 'Error processing payment');
+                    submitBtn.disabled = false;
+                    submitBtn.innerHTML = '<i class="fas fa-money-bill-wave"></i> Proceed to Payment';
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Error processing payment');
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = '<i class="fas fa-money-bill-wave"></i> Proceed to Payment';
             });
-        
-            // Add selected class to clicked payment method
-            document.getElementById(method + '-option').classList.add('selected');
-        
-            // Hide all payment forms
-            document.getElementById('gcashForm').style.display = 'none';
-            document.getElementById('codForm').style.display = 'none';
-            document.getElementById('pickupForm').style.display = 'none';
-        
-            // Show selected payment form
-            document.getElementById(method + 'Form').style.display = 'block';
-        
-            // Update hidden input value
-            document.getElementById('paymentMethodInput').value = method;
-            
-            // Enable the confirm payment button
-            const confirmButton = document.getElementById('confirmPaymentBtn');
-            confirmButton.disabled = false;
-            confirmButton.style.backgroundColor = '#8B4513';
-            confirmButton.style.cursor = 'pointer';
-        }
-        
-        // Add this at the beginning of your script
-        document.addEventListener('DOMContentLoaded', function() {
-            // Initially disable the confirm button
-            const confirmButton = document.getElementById('confirmPaymentBtn');
-            if (confirmButton) {
-                confirmButton.disabled = true;
-                confirmButton.style.backgroundColor = '#ddd';
-                confirmButton.style.cursor = 'not-allowed';
-            }
-        });
 
-        // Replace the existing form submission code
-        document.addEventListener('DOMContentLoaded', function() {
-            const paymentForm = document.getElementById('paymentForm');
-            
-            if (paymentForm) {
-                paymentForm.addEventListener('submit', function(event) {
-                    event.preventDefault();
-                    
-                    const paymentMethod = document.getElementById('paymentMethodInput').value;
-                    if (!paymentMethod) {
-                        showError('Please select a payment method');
-                        return false;
-                    }
-                    
-                    let isValid = true;
-                    let formData = new FormData(this);
-                    
-                    // Validate based on payment method
-                    switch(paymentMethod) {
-                        case 'gcash':
-                            isValid = validateGcashFields(formData);
-                            break;
-                        case 'cod':
-                            isValid = validateCodFields(formData);
-                            break;
-                        case 'pickup':
-                            isValid = validatePickupFields(formData);
-                            break;
-                    }
-                    
-                    if (isValid) {
-                        const button = document.getElementById('confirmPaymentBtn');
-                        button.disabled = true;
-                        button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
-                        
-                        // Submit the form normally
-                        this.submit();
-                    }
-                });
-            }
-        });
-
-        // Add these helper functions
-        function showError(message) {
-            const errorDiv = document.createElement('div');
-            errorDiv.className = 'error-message';
-            errorDiv.style.cssText = 'color: red; background-color: #ffeeee; padding: 10px; border-radius: 5px; margin: 10px 0;';
-            errorDiv.textContent = message;
-            document.querySelector('.header').appendChild(errorDiv);
+            return false;
         }
-
-        function validateGcashFields(formData) {
-            if (!formData.get('gcash_number')) {
-                showError('GCash number is required');
-                return false;
-            }
-            if (!formData.get('gcash_name')) {
-                showError('GCash account name is required');
-                return false;
-            }
-            if (!formData.get('payment_screenshot').size) {
-                showError('Payment screenshot is required');
-                return false;
-            }
-            return true;
-        }
-
-        function validateCodFields(formData) {
-            if (!formData.get('delivery_address')) {
-                showError('Delivery address is required');
-                return false;
-            }
-            if (!formData.get('contact_number')) {
-                showError('Contact number is required');
-                return false;
-            }
-            return true;
-        }
-
-        function validatePickupFields(formData) {
-            const pickupDate = formData.get('pickup_date');
-            const pickupTime = formData.get('pickup_time');
-            const pickupContact = formData.get('pickup_contact');
-        
-            if (!pickupDate) {
-                showError('Pickup date is required');
-                return false;
-            }
-            
-            // Validate if date is not in the past
-            const today = new Date();
-            today.setHours(0, 0, 0, 0);
-            const selectedDate = new Date(pickupDate);
-            if (selectedDate < today) {
-                showError('Pickup date cannot be in the past');
-                return false;
-            }
-        
-            if (!pickupTime) {
-                showError('Pickup time is required');
-                return false;
-            }
-            
-            if (!pickupContact) {
-                showError('Contact number is required');
-                return false;
-            }
-            
-            // Validate contact number format (Philippine format)
-            const contactRegex = /^(09|\+639)\d{9}$/;
-            if (!contactRegex.test(pickupContact.replace(/[-\s]/g, ''))) {
-                showError('Please enter a valid contact number (e.g., 09XXXXXXXXX)');
-                return false;
-            }
-        
-            return true;
-        }
-    </script>
+        </script>
 </body>
 </html>

@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ElderWood - Home</title>
     <style>
-        /* Hell world. */
         :root {
             --primary-brown: #8B4513;
             --secondary-brown: #A0522D;

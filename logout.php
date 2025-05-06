@@ -16,6 +16,6 @@ if (isset($_COOKIE[session_name()])) {
 session_destroy();
 
 // Redirect to login page with correct path
-header('Location: /elwood/main.php');
+header('Location: /elwood/index.php');
 exit();
 ?>

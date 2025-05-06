@@ -3,7 +3,6 @@ session_start();
 require_once 'database/config.php';
 require_once 'classes/User.php';
 
-// Check if user is logged in and is a seller
 if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'Seller') {
     header('Location: login.php');
     exit();
@@ -12,7 +11,6 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'Seller') {
 $user = new User($pdo);
 $userDetails = $user->getUserById($_SESSION['user_id']);
 
-// Fetch orders from notifications table for this seller
 $stmt = $pdo->prepare("
     SELECT 
         n.id,
@@ -27,7 +25,9 @@ $stmt = $pdo->prepare("
         ol.width_feet,
         ol.height_feet,
         ol.quantity,
+        ol.status,
         pc.price_per_sqft,
+        pc.image_path,
         CASE 
             WHEN ol.status IN ('Pending', 'Ordered') THEN 'Pending Orders'
             ELSE ol.status 
@@ -53,7 +53,7 @@ $stmt->execute([
     'seller_id' => $_SESSION['user_id'],
     'user_id' => $_SESSION['user_id']
 ]);
-$notifications = $stmt->fetchAll(PDO::FETCH_ASSOC);
+$orders = $stmt->fetchAll(PDO::FETCH_ASSOC);
 ?>
 
 <!DOCTYPE html>
@@ -64,32 +64,67 @@ $notifications = $stmt->fetchAll(PDO::FETCH_ASSOC);
     <title>Orders Management - ElderWood</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <style>
-        /* Include the same CSS from seller_dashboard.php */
-        /* Add these additional styles for the orders page */
+        :root {
+            --primary-brown: #5a3921;
+            --secondary-brown: #8b4513;
+            --light-brown: #d2b48c;
+            --sidebar-width: 250px;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f4f4;
+        }
+
+        .main-content {
+            margin-left: var(--sidebar-width);
+            padding: 20px;
+            transition: margin-left 0.3s;
+        }
+
+        .dashboard-header {
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+
+        .dashboard-header h1 {
+            color: var(--primary-brown);
+            margin-bottom: 10px;
+        }
+
+        /* Orders Table Styles */
         .orders-container {
             background-color: white;
             border-radius: 10px;
             padding: 20px;
-            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
             overflow-x: auto;
         }
 
         .order-filters {
             margin-bottom: 20px;
-            flex-wrap: wrap;
             display: flex;
             gap: 10px;
+            flex-wrap: wrap;
         }
 
         .filter-btn {
             padding: 8px 16px;
-            white-space: nowrap;
             border: none;
             border-radius: 5px;
             background-color: var(--light-brown);
             color: var(--primary-brown);
             cursor: pointer;
-            transition: all 0.3s ease;
+            transition: all 0.3s;
         }
 
         .filter-btn.active {
@@ -98,58 +133,9 @@ $notifications = $stmt->fetchAll(PDO::FETCH_ASSOC);
         }
 
         .orders-table {
-            min-width: 800px;
             width: 100%;
             border-collapse: collapse;
-            margin-top: 20px;
-        }
-        @media screen and (max-width: 1024px) {
-            .actions-cell {
-                display: flex;
-                flex-direction: column;
-                gap: 5px;
-            }
-            .action-btn, .status-select {
-                width: 100%;
-                margin: 2px 0;
-            }
-        }
-        @media screen and (max-width: 768px) {
-            .dashboard-header {
-                padding: 15px;
-                margin-bottom: 15px;
-            }
-
-            .dashboard-header h1 {
-                font-size: 24px;
-            }
-
-            .orders-container {
-                padding: 10px;
-            }
-
-            .orders-table th, 
-            .orders-table td {
-                padding: 10px;
-                font-size: 14px;
-            }
-
-            .buyer-info, 
-            .order-details {
-                font-size: 13px;
-            }
-        }
-        @media screen and (max-width: 480px) {
-            .filter-btn {
-                padding: 6px 12px;
-                font-size: 13px;
-            }
-
-            .orders-table th, 
-            .orders-table td {
-                padding: 8px;
-                font-size: 13px;
-            }
+            min-width: 800px;
         }
 
         .orders-table th,
@@ -157,7 +143,6 @@ $notifications = $stmt->fetchAll(PDO::FETCH_ASSOC);
             padding: 12px;
             text-align: left;
             border-bottom: 1px solid #ddd;
-            vertical-align: middle;
         }
 
         .orders-table th {
@@ -165,6 +150,272 @@ $notifications = $stmt->fetchAll(PDO::FETCH_ASSOC);
             color: var(--primary-brown);
         }
 
+        /* Modal Styles */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .modal-content {
+    background-color: white;
+    padding: 20px;
+    border-radius: 8px;
+    max-width: fit-content;
+    width: auto;
+    position: relative;
+}
+
+        .close {
+            position: absolute;
+            right: 15px;
+            top: 10px;
+            font-size: 24px;
+            cursor: pointer;
+        }
+
+        /* Responsive Styles */
+        @media screen and (max-width: 768px) {
+            .main-content {
+                margin-left: 0;
+            }
+
+            .sidebar {
+                transform: translateX(-100%);
+            }
+
+            .sidebar.active {
+                transform: translateX(0);
+            }
+
+            .burger-menu {
+                display: block;
+            }
+        }
+
+        /* Update Sidebar and Responsive Styles */
+        .sidebar {
+            position: fixed;
+            left: 0;
+            top: 0;
+            height: 100vh;
+            width: var(--sidebar-width);
+            background-color: var(--primary-brown);
+            z-index: 1000;
+            transition: transform 0.3s ease;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Add these new styles for nav links */
+        .nav-links {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .nav-links li {
+            margin: 5px 0;
+        }
+
+        .nav-links a {
+            color: white !important;
+            text-decoration: none;
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            transition: 0.3s;
+        }
+
+        .nav-links a i {
+            margin-right: 15px;
+            width: 20px;
+            color: white !important;
+        }
+
+        .nav-links a span {
+            color: white !important;
+            display: inline-block;
+        }
+
+        /* Update Media Query */
+        @media screen and (max-width: 768px) {
+            .sidebar {
+                width: 60px;
+            }
+
+            .sidebar.active {
+                width: 250px !important;
+            }
+
+            .nav-links a span {
+                display: none;
+            }
+
+            .sidebar.active .nav-links a span {
+                display: inline-block;
+            }
+
+            .nav-links a {
+                justify-content: center;
+                padding: 12px;
+            }
+
+            .sidebar.active .nav-links a {
+                justify-content: flex-start;
+                padding: 12px 20px;
+            }
+
+            .nav-links a i {
+                margin-right: 0;
+            }
+
+            .sidebar.active .nav-links a i {
+                margin-right: 15px;
+            }
+        }
+
+        /* Profile section styles */
+        .profile-section {
+            padding: 20px;
+            text-align: center;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .profile-image {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            margin-bottom: 10px;
+        }
+
+        .profile-name {
+            color: white;
+            margin-bottom: 5px;
+        }
+
+        /* Update Media Query */
+        @media screen and (max-width: 768px) {
+            .main-content {
+                margin-left: 0;
+                width: 100%;
+                padding-top: 60px;
+            }
+
+            .sidebar {
+                transform: translateX(-100%);
+                box-shadow: 2px 0 5px rgba(0,0,0,0.1);
+                width: 250px !important;
+                height: 100vh;
+            }
+
+            .sidebar.active {
+                transform: translateX(0);
+                display: flex;
+                flex-direction: column;
+            }
+
+            /* Ensure sidebar content is visible */
+            .sidebar .nav-links,
+            .sidebar .profile-section,
+            .sidebar .logout-btn {
+                display: block;
+                width: 100%;
+            }
+
+            /* Add overlay when sidebar is active */
+            .sidebar.active::after {
+                content: '';
+                position: fixed;
+                top: 0;
+                left: 250px;
+                width: 100vw;
+                height: 100vh;
+                background: rgba(0,0,0,0.5);
+                z-index: -1;
+            }
+        }
+
+        /* Burger Menu - Update display conditions */
+        .burger-menu {
+            display: none;
+            position: fixed;
+            top: 15px;
+            left: 15px;
+            z-index: 1001;
+            background: var(--primary-brown);
+            color: white;
+            border: none;
+            padding: 10px;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        /* Update Media Query */
+        @media screen and (max-width: 768px) {
+            .main-content {
+                margin-left: 0;
+                width: 100%;
+                padding-top: 60px; /* Add space for burger menu */
+            }
+
+            .sidebar {
+                transform: translateX(-100%);
+                box-shadow: 2px 0 5px rgba(0,0,0,0.1);
+            }
+
+            .sidebar.active {
+                transform: translateX(0);
+            }
+
+            .burger-menu {
+                display: block !important; /* Force display on mobile */
+            }
+        }
+
+        /* Burger Menu */
+        .burger-menu {
+            display: none;
+            position: fixed;
+            top: 15px;
+            left: 15px;
+            z-index: 1001;
+            background: var(--primary-brown);
+            color: white;
+            border: none;
+            padding: 10px;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        /* Action Buttons */
+        .action-btn {
+            padding: 6px 12px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 5px;
+            color: white;
+        }
+
+        .view-btn {
+            background-color: var(--primary-brown);
+        }
+
+        .status-select {
+            padding: 6px;
+            border-radius: 4px;
+        }
+
+        /* Status Badges */
         .status-badge {
             padding: 5px 10px;
             border-radius: 15px;
@@ -182,624 +433,172 @@ $notifications = $stmt->fetchAll(PDO::FETCH_ASSOC);
             color: #004085;
         }
 
-        .status-shipped {
+        .status-completed {
             background-color: #D4EDDA;
             color: #155724;
-        }
-
-        .status-delivered {
-            background-color: #C3E6CB;
-            color: #1E7E34;
         }
 
         .status-cancelled {
             background-color: #F8D7DA;
             color: #721C24;
         }
-
-        .action-btn {
-            display: inline-flex;
-            align-items: center;
-            gap: 5px;
-            padding: 6px 12px;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 0.9em;
-            transition: all 0.3s ease;
-            vertical-align: middle;
-        }
-
-        .view-btn {
-            background-color: var(--primary-brown);
-            color: white;
-        }
-
-        .update-btn {
-            background-color: var(--secondary-brown);
-            color: white;
-        }
-
-        .unread-notification {
-            background-color: #fff3e0;
-        }
-        
-        .status-badge.status-pending {
-            background-color: #FFF3CD;
-            color: #856404;
-        }
-        
-        .notification-dot {
-            width: 8px;
-            height: 8px;
-            background-color: #ff4444;
-            border-radius: 50%;
-            display: inline-block;
-            margin-left: 5px;
-        }
-
-        .message-content {
-            white-space: pre-line;
-            line-height: 1.4;
-        }
-
-        .order-time {
-            color: #666;
-            font-size: 0.9em;
-        }
-
-        .buyer-info {
-            margin-top: 5px;
-            font-size: 0.9em;
-            color: #555;
-        }
-
-        .modal {
-            display: none;
-            position: fixed;
-            z-index: 1000;
-            left: 0;
-            top: 0;
-            width: 100%;
-            height: 100%;
-            background-color: rgba(0,0,0,0.5);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .modal-content {
-            background-color: #fff;
-            padding: 25px;
-            border-radius: 8px;
-            width: 90%;
-            max-width: 400px;
-            position: relative;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        }
-
-        .close {
-            position: absolute;
-            right: 15px;
-            top: 10px;
-            font-size: 24px;
-            cursor: pointer;
-            color: #666;
-        }
-
-        .close:hover {
-            color: #333;
-        }
-
-        #statusSelect {
-            width: 100%;
-            padding: 10px;
-            margin: 15px 0;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            font-size: 16px;
-        }
-
-        .update-status-btn {
-            width: 100%;
-            padding: 12px;
-            background-color: var(--primary-brown);
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 16px;
-            font-weight: 600;
-            margin-top: 10px;
-        }
-
-        .update-status-btn:hover {
-            background-color: var(--secondary-brown);
-        }
-
-        .actions-cell {
-            display: inline-flex;
-            gap: 8px;
-            align-items: center;
-            white-space: nowrap;
-        }
-
-        .status-select {
-            padding: 6px 12px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            background-color: white;
-            color: #333;
-            font-size: 0.9em;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            vertical-align: middle;
-        }
-
-        .status-select:hover:not(:disabled) {
-            border-color: var(--primary-brown);
-        }
-
-        .status-select:disabled {
-            background-color: #f5f5f5;
-            cursor: not-allowed;
-            opacity: 0.7;
-        }
-
-        .view-btn {
-            background-color: var(--primary-brown);
-            color: white;
-        }
-
-        .mark-read-btn {
-            background-color: var(--secondary-brown);
-            color: white;
-        }
-
-        .view-btn:hover, .mark-read-btn:hover {
-            opacity: 0.9;
-            transform: translateY(-1px);
-        }
-
-        /* Product Details Modal Styles */
-        .product-details-modal {
-            max-width: 600px;
-            padding: 30px;
-        }
-
-        .product-details-container {
-            display: flex;
-            gap: 20px;
-            margin-top: 20px;
-        }
-
-        .product-image-container {
-            flex: 0 0 200px;
-            height: 200px;
-        }
-
-        .product-image-container img {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-            border-radius: 8px;
-        }
-
-        .product-info-container {
-            flex: 1;
-        }
-
-        .product-info-container h3 {
-            color: var(--primary-brown);
-            margin-bottom: 15px;
-        }
-
-        .product-specs {
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-        }
-
-        .product-specs p {
-            margin: 0;
-            font-size: 1.1em;
-        }
-
-        .check-product-btn {
-            background-color: #2c3e50;
-            color: white;
-        }
-
-        .check-product-btn:hover {
-            background-color: #34495e;
-        }
-
-        .modal {
-            display: none;
-            position: fixed;
-            z-index: 1000;
-            left: 0;
-            top: 0;
-            width: 100%;
-            height: 100%;
-            background-color: rgba(0,0,0,0.5);
-        }
-
-        .modal.show {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .modal-actions {
-            display: flex;
-            gap: 10px;
-            margin-top: 20px;
-            justify-content: center;
-        }
-
-        .check-products-btn {
-            background-color: #2c3e50;
-            color: white;
-            padding: 10px 20px;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 1em;
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            transition: all 0.3s ease;
-        }
-
-        .check-products-btn:hover {
-            background-color: #34495e;
-            transform: translateY(-1px);
-        }
-
-        .tally-order-btn {
-            background-color: #5a3921;
-            color: white;
-        }
-
-        .divider {
-            margin: 20px 0;
-            border: none;
-            border-top: 1px solid #ddd;
-        }
-
-        .tally-details {
-            background-color: #f9f9f9;
-            padding: 15px;
-            border-radius: 8px;
-            margin-top: 15px;
-        }
-
-        .total-amount {
-            font-size: 1.2em;
-            color: #5a3921;
-            margin-top: 10px;
-            padding-top: 10px;
-            border-top: 2px dashed #ddd;
-        }
-
-        #tallyOrderSection {
-            margin-top: 20px;
-        }
-
-        .tally-modal {
-            max-width: 500px;
-            padding: 25px;
-        }
-
-        .tally-container {
-            background-color: #fff;
-            border-radius: 8px;
-        }
-
-        .tally-header {
-            margin-bottom: 20px;
-            padding-bottom: 15px;
-            border-bottom: 2px solid #eee;
-        }
-
-        .order-number {
-            color: #666;
-            font-size: 0.9em;
-        }
-
-        .tally-row {
-            display: flex;
-            justify-content: space-between;
-            padding: 10px 0;
-            border-bottom: 1px solid #eee;
-        }
-
-        .tally-row.total {
-            margin-top: 15px;
-            padding-top: 15px;
-            border-top: 2px dashed #ddd;
-            border-bottom: none;
-            font-size: 1.2em;
-            font-weight: bold;
-            color: #5a3921;
-        }
-
-        .tally-actions {
-            margin-top: 20px;
-            text-align: right;
-        }
-
-        .save-tally-btn {
-            background-color: #5a3921;
-            color: white;
-        }
-
-        .save-tally-btn:hover {
-            background-color: #4a2911;
-        }
-
-        /* Receipt Modal Styles */
-        .receipt-modal {
-            max-width: 500px;
-            padding: 30px;
-        }
-
-        .receipt-container {
-            background-color: #fff;
-            padding: 20px;
-            border-radius: 8px;
-            border: 2px solid #ddd;
-        }
-
-        .receipt-header {
-            text-align: center;
-            margin-bottom: 20px;
-            padding-bottom: 15px;
-            border-bottom: 2px solid #eee;
-        }
-
-        .receipt-number, .receipt-date {
-            color: #666;
-            margin: 5px 0;
-        }
-
-        .receipt-body {
-            padding: 20px 0;
-        }
-
-        .details-row {
-            margin-bottom: 15px;
-        }
-
-        .details-column {
-            padding: 0 15px;
-        }
-
-        .details-column p {
-            margin: 8px 0;
-            line-height: 1.4;
-        }
-
-        .amount-details {
-            margin-top: 20px;
-            padding-top: 15px;
-            border-top: 2px solid #eee;
-        }
-
         .create-receipt-btn {
-            background-color: #28a745;
-            color: white;
-        }
-
-        .create-receipt-btn:hover {
-            background-color: #218838;
-        }
-
-        .print-receipt-btn {
-            background-color: #17a2b8;
-            margin-left: 10px;
-        }
-
-        .view-receipt-btn {
-            background-color: #17a2b8;
-            color: white;
-        }
-
-        .view-receipt-btn:hover {
-            background-color: #138496;
-        }
-        .payment-details-modal {
-    max-width: 400px;
-    max-height: 80vh;
-    padding: 20px;
-    overflow-y: auto;
-}
-
-.payment-info {
-    margin-top: 15px;
-}
-
-.payment-info p {
-    margin: 10px 0;
-    line-height: 1.6;
-}
-#paymentScreenshot {
-    max-width: 100%;
-    height: auto;
-    max-height: 300px;
-    object-fit: contain;
-    border: 1px solid #ddd;
+    background-color: #28a745;
+    color: white;
+    border: none;
+    padding: 8px 16px;
     border-radius: 4px;
-}
-.payment-info p {
-    margin: 8px 0;
-    line-height: 1.4;
+    cursor: pointer;
+    margin-top: 15px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
     font-size: 14px;
+    transition: all 0.3s ease;
 }
 
-.payment-section {
+.create-receipt-btn:hover {
+    background-color: #218838;
+    transform: translateY(-2px);
+}
+
+.tally-details {
+    background-color: #fff;
+    padding: 15px;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     margin-bottom: 15px;
-    padding-bottom: 15px;
-    border-bottom: 1px solid #eee;
+}
+.receipt-btn {
+    background-color: #17a2b8;
+    color: white;
+    margin: 5px 0;
 }
 
-.payment-section:last-child {
-    border-bottom: none;
+.receipt-btn:hover {
+    background-color: #138496;
+}
+.receipt-container {
+    background: white;
+    padding: 20px;
+    border: 2px solid #8B4513;
+    width: 400px;
+    margin: 0;
+    font-family: 'Courier New', monospace;
 }
 
-.payment-status {
-    display: inline-block;
-    padding: 5px 10px;
-    border-radius: 15px;
+.receipt-header {
+    text-align: center;
+    margin-bottom: 20px;
+}
+
+.receipt-header h2 {
+    margin: 0;
+    font-size: 1.2em;
     font-weight: bold;
 }
 
-.status-pending {
-    background-color: #FFF3CD;
-    color: #856404;
+.receipt-date {
+    text-align: left;
+    margin-top: 10px;
 }
 
-.status-completed {
-    background-color: #D4EDDA;
-    color: #155724;
+.receipt-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 20px 0;
 }
-.view-payment-btn {
-    background-color: #28a745;
+
+.receipt-table th,
+.receipt-table td {
+    border: 1px solid #000;
+    padding: 8px;
+    text-align: left;
+}
+
+.receipt-table th {
+    background-color: #fff;
+    font-weight: bold;
+}
+
+.receipt-summary {
+    margin-top: 20px;
+}
+
+.receipt-totals {
+    border-top: 1px solid #000;
+    padding-top: 10px;
+}
+
+.receipt-totals p {
+    display: flex;
+    justify-content: space-between;
+    margin: 5px 0;
+}
+
+.receipt-totals .total {
+    font-weight: bold;
+    border-top: 1px solid #000;
+    padding-top: 5px;
+}
+
+.receipt-number {
+    text-align: left;
+    margin-top: 5px;
+    font-family: 'Courier New', monospace;
+}
+
+.receipt-info {
+    margin: 15px 0;
+    padding: 10px 0;
+    border-bottom: 1px solid #000;
+}
+
+.receipt-info p {
+    margin: 5px 0;
+}
+
+.payment-method input[type="checkbox"] {
+    margin-right: 10px;
+}
+.payment-btn {
+    background-color: #6f42c1;
     color: white;
+    margin: 5px 0;
 }
 
-.view-payment-btn:hover {
-    background-color: #218838;
+.payment-btn:hover {
+    background-color: #5a32a3;
 }
-.status-ready {
-        background-color: #E8D5F9;  /* Light purple background */
-        color: #6A1B9A;            /* Dark purple text */
-    }
-    .status-ready-for-pick-up {
-        background-color: #E8D5F9;  /* Light purple background */
-        color: #6A1B9A;            /* Dark purple text */
-    }
-    .laborer-info-btn {
-        background: none;
-        border: none;
-        color: var(--primary-brown);
-        cursor: pointer;
-        padding: 5px;
-        margin-left: 5px;
-        transition: color 0.3s ease;
-    }
 
-    .laborer-info-btn:hover {
-        color: var(--secondary-brown);
-    }
+.payment-details {
+    background: white;
+    padding: 20px;
+    border-radius: 8px;
+}
 
-    .laborer-info-modal {
-        max-width: 300px;
-        text-align: center;
-    }
+.payment-info {
+    margin: 15px 0;
+}
 
-    .laborer-info-content {
-        padding: 20px;
-    }
+.payment-proof {
+    margin-top: 15px;
+    text-align: center;
+}
 
-    .laborer-info-content p {
-        margin: 10px 0;
-        color: #666;
-    }
+.payment-proof img {
+    max-width: 300px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    padding: 5px;
+}
     </style>
- <style>
-    /* Add these new styles after your existing root variables */
-    .burger-menu {
-        display: none;
-        position: fixed;
-        top: 15px;
-        left: 15px;
-        z-index: 1001;
-        background: var(--primary-brown);
-        color: white;
-        border: none;
-        padding: 10px;
-        border-radius: 5px;
-        cursor: pointer;
-        font-size: 1.2em;
-    }
-
-    /* Update the sidebar and responsive styles */
-    .sidebar {
-        transition: transform 0.3s ease;
-    }
-
-    @media screen and (max-width: 768px) {
-            .burger-menu {
-                display: block;
-            }
-
-            .sidebar {
-                transform: translateX(-100%);
-                width: 280px !important; /* Override the default width */
-                z-index: 1000;
-            }
-
-            .sidebar.active {
-                transform: translateX(0);
-            }
-
-            .main-content {
-                margin-left: 0;
-                width: 100%;
-                padding-top: 60px;
-            }
-
-            /* Show profile details and nav links text */
-            .profile-details, 
-            .nav-links span, 
-            .logout-btn span {
-                display: block !important;
-            }
-
-            /* Fix navigation links display */
-            .nav-links a {
-                padding: 15px 25px;
-                justify-content: flex-start;
-            }
-
-            .nav-links i {
-                width: 24px;
-                margin-right: 15px;
-            }
-
-            /* Fix logout button */
-            .logout-btn a {
-                padding: 12px 25px;
-                justify-content: flex-start;
-            }
-
-            .logout-btn i {
-                margin-right: 15px;
-            }
-
-            /* Ensure profile section is visible */
-            .profile-section {
-                padding: 20px;
-                display: block;
-            }
-
-            .profile-image {
-                width: 100px;
-                height: 100px;
-                margin: 0 auto 15px;
-            }
-        }
-</style>
-
 </head>
-
 <body>
-        <button class="burger-menu" onclick="toggleSidebar()">
-            <i class="fas fa-bars"></i>
-        </button>
-    <!-- Include the sidebar from seller_dashboard.php -->
+    <button class="burger-menu" onclick="toggleSidebar()">
+        <i class="fas fa-bars"></i>
+    </button>
+
     <?php include 'includes/seller_sidebar.php'; ?>
 
     <div class="main-content">
@@ -811,7 +610,7 @@ $notifications = $stmt->fetchAll(PDO::FETCH_ASSOC);
         <div class="orders-container">
             <div class="order-filters">
                 <button class="filter-btn active" data-status="all">All Orders</button>
-                <button class="filter-btn" data-status="pending orders">Pending Orders</button>
+                <button class="filter-btn" data-status="pending">Pending Orders</button>
                 <button class="filter-btn" data-status="processing">Processing</button>
                 <button class="filter-btn" data-status="completed">Completed</button>
                 <button class="filter-btn" data-status="cancelled">Cancelled</button>
@@ -824,265 +623,342 @@ $notifications = $stmt->fetchAll(PDO::FETCH_ASSOC);
                         <th>Order Details</th>
                         <th>Buyer Information</th>
                         <th>Status</th>
-                        <th style="min-width: 250px;">Actions</th>
+                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody>
-                    <?php foreach ($notifications as $order): ?>
-                        <tr class="<?php echo $order['is_read'] ? '' : 'unread-notification'; ?>">
-                            <td class="order-time">
-                                <?php echo date('M d, Y h:i A', strtotime($order['created_at'])); ?>
-                                <?php if (!$order['is_read']): ?>
-                                    <span class="notification-dot" title="New Order"></span>
-                                <?php endif; ?>
-                            </td>
-                            <td>
-                                <div class="order-details">
-                                    <strong>Product:</strong> <?php echo htmlspecialchars($order['product_name']); ?><br>
-                                    <strong>Size:</strong> <?php echo htmlspecialchars($order['length_feet']); ?>' x 
-                                                 <?php echo htmlspecialchars($order['width_feet']); ?>' x 
-                                                 <?php echo htmlspecialchars($order['height_feet']); ?>'<br>
-                                    <strong>Quantity:</strong> <?php echo htmlspecialchars($order['quantity']); ?> pieces
-                                </div>
-                            </td>
-                            <td>
-                                <div class="buyer-info">
-                                    <strong>Buyer:</strong> 
-                                    <?php echo htmlspecialchars($order['firstname'] . ' ' . $order['lastname']); ?><br>
-                                    <strong>Contact:</strong> 
-                                    <?php echo htmlspecialchars($order['contactno']); ?><br>
-                                    <strong>Address:</strong> 
-                                    <?php echo htmlspecialchars($order['address']); ?>
-                                </div>
-                            </td>
-                            <td>
-    <span class="status-badge status-<?php echo strtolower($order['status']); ?>">
-        <?php echo htmlspecialchars($order['status']); ?>
-    </span>
-    <?php if ($order['status'] === 'Ready for Pick Up'): ?>
-        <button class="laborer-info-btn" onclick="viewLaborerInfo(<?php echo $order['reference_id']; ?>)">
-            <i class="fas fa-user-clock"></i>
-        </button>
-    <?php endif; ?>
-</td>
-                            <td>
-                            <div class="actions-cell">
-                    <?php if ($order['status'] === 'Payment Pending' || $order['status'] === 'Pickup Pending'): ?>
-                        <button class="action-btn view-payment-btn" 
-                                onclick="viewPaymentDetails(<?php echo $order['reference_id']; ?>)">
-                            <i class="fas fa-money-bill"></i> View Payment
-                        </button>
-                    <?php else: ?>
-                        <button class="action-btn view-btn" 
-                                onclick="checkInProduct(
-                                    '<?php echo htmlspecialchars($order['product_name']); ?>', 
-                                    <?php echo $order['length_feet']; ?>, 
-                                    <?php echo $order['width_feet']; ?>, 
-                                    <?php echo $order['height_feet']; ?>, 
-                                    <?php echo $order['quantity']; ?>,
-                                    <?php echo $order['price_per_sqft']; ?>,
-                                    <?php echo $order['reference_id']; ?>
-                                )">
-                            <i class="fas fa-eye"></i> View
-            </button>
-        <?php endif; ?>
-                                    <?php
-                                    // Check if order has been tallied
-                                    $tallyCheck = $pdo->prepare("SELECT id FROM cus_orders WHERE order_id = ?");
-                                    $tallyCheck->execute([$order['reference_id']]);
-                                    
-                                    if ($tallyCheck->rowCount() > 0):
-                                        // Check if receipt exists
-                                        $receiptCheck = $pdo->prepare("SELECT receipt_number FROM Receipt WHERE order_id = ?");
-                                        $receiptCheck->execute([$order['reference_id']]);
-                                        
-                                        if ($receiptCheck->rowCount() > 0):
-                                            $receipt = $receiptCheck->fetch(PDO::FETCH_ASSOC);
-                                        ?>
-                                            <button class="action-btn view-receipt-btn" 
-                                                    onclick="viewReceipt(<?php echo $order['reference_id']; ?>)">
-                                                <i class="fas fa-file-invoice"></i> View Receipt
-                                            </button>
-                                        <?php else: ?>
-                                            <button class="action-btn create-receipt-btn" 
-                                                    onclick="createReceipt(<?php echo $order['reference_id']; ?>)">
-                                                <i class="fas fa-file-invoice"></i> Create Receipt
-                                            </button>
-                                        <?php endif; ?>
-                                    <?php endif; ?>
-                                    <?php if (!$order['is_read']): ?>
-                                        <button class="action-btn mark-read-btn" 
-                                                onclick="markAsRead(<?php echo $order['id']; ?>)">
-                                            <i class="fas fa-check"></i> Mark as Read
-                                        </button>
-                                    <?php endif; ?>
-                                    <select class="status-select" 
-                                            onchange="updateOrderStatus(<?php echo $order['reference_id']; ?>, this.value)"
-                                            <?php echo ($order['status'] === 'Completed' || $order['status'] === 'Cancelled') ? 'disabled' : ''; ?>>
-                                        <option value="">Update Status</option>
-                                        <option value="Processing">Processing</option>
-                                        <option value="Completed">Completed</option>
-                                        <option value="Cancelled">Cancelled</option>
-                                    </select>
-                                </div>
-                            </td>
-                        </tr>
+                    <?php foreach ($orders as $order): ?>
+                    <tr class="<?php echo $order['is_read'] ? '' : 'unread-notification'; ?>">
+                        <td><?php echo date('M d, Y h:i A', strtotime($order['created_at'])); ?></td>
+                        <td>
+                            <strong>Product:</strong> <?php echo htmlspecialchars($order['product_name']); ?><br>
+                            <strong>Size:</strong> <?php echo htmlspecialchars($order['length_feet']); ?>' x 
+                                         <?php echo htmlspecialchars($order['width_feet']); ?>' x 
+                                         <?php echo htmlspecialchars($order['height_feet']); ?>'<br>
+                            <strong>Quantity:</strong> <?php echo htmlspecialchars($order['quantity']); ?> pieces
+                        </td>
+                        <td>
+                            <strong>Buyer:</strong> <?php echo htmlspecialchars($order['firstname'] . ' ' . $order['lastname']); ?><br>
+                            <strong>Contact:</strong> <?php echo htmlspecialchars($order['contactno']); ?><br>
+                            <strong>Address:</strong> <?php echo htmlspecialchars($order['address']); ?>
+                        </td>
+                        <td>
+                            <span class="status-badge status-<?php echo strtolower($order['status']); ?>">
+                                <?php echo htmlspecialchars($order['status']); ?>
+                            </span>
+                        </td>
+                        <td>
+                            <button class="action-btn view-btn" onclick="viewOrder(<?php 
+                                echo htmlspecialchars(json_encode([
+                                    'reference_id' => $order['reference_id'],
+                                    'product_name' => $order['product_name'],
+                                    'length_feet' => $order['length_feet'],
+                                    'width_feet' => $order['width_feet'],
+                                    'height_feet' => $order['height_feet'],
+                                    'quantity' => $order['quantity'],
+                                    'buyer_name' => $order['firstname'] . ' ' . $order['lastname'],
+                                    'contact' => $order['contactno'],
+                                    'address' => $order['address']
+                                ])); 
+                            ?>)">
+                                <i class="fas fa-eye"></i> View
+                            </button>
+                            
+                            <?php
+                            // Check if receipt exists for this order
+                            $receiptStmt = $pdo->prepare("SELECT id FROM receipt WHERE order_id = ?");
+                            $receiptStmt->execute([$order['reference_id']]);
+                            if ($receiptStmt->fetch()): 
+                            ?>
+                            <button class="action-btn receipt-btn" onclick="viewReceipt(<?php echo $order['reference_id']; ?>)">
+                                <i class="fas fa-file-invoice"></i> View Receipt
+                            </button>
+                            <?php
+// Check if payment exists for this order
+$paymentStmt = $pdo->prepare("SELECT * FROM payments WHERE order_id = ?");
+$paymentStmt->execute([$order['reference_id']]);
+if ($paymentStmt->fetch()): 
+?>
+<button class="action-btn payment-btn" onclick="viewPayment(<?php echo $order['reference_id']; ?>)">
+    <i class="fas fa-money-bill-wave"></i> View Payment
+</button>
+<?php endif; ?>
+                            <?php endif; ?>
+                            <select class="status-select" onchange="updateStatus(<?php echo $order['reference_id']; ?>, this.value)"
+                                    <?php echo ($order['status'] === 'Completed' || $order['status'] === 'Cancelled') ? 'disabled' : ''; ?>>
+                                <option value="">Update Status</option>
+                                <option value="Processing">Processing</option>
+                                <option value="Completed">Completed</option>
+                                <option value="Cancelled">Cancelled</option>
+                            </select>
+                            <?php
+                            // Check if order is tallied
+                            $tallyStmt = $pdo->prepare("SELECT * FROM cus_orders WHERE order_id = ?");
+                            $tallyStmt->execute([$order['reference_id']]);
+                            if ($tallyStmt->fetch()): 
+                            ?>
+                            <button class="action-btn view-btn" onclick="viewTally(<?php echo $order['reference_id']; ?>)" style="background-color: #28a745;">
+                                <i class="fas fa-receipt"></i> View Tally
+                            </button>
+                            <?php endif; ?>
+                        </td>
+                    </tr>
                     <?php endforeach; ?>
                 </tbody>
             </table>
         </div>
     </div>
 
-    <!-- Product Details Modal -->
-    <div id="productDetailsModal" class="modal">
-        <div class="modal-content product-details-modal">
-            <span class="close" onclick="closeProductModal()">&times;</span>
-            <h2>Product Details</h2>
-            <div class="product-details-container">
-                <div class="product-image-container">
-                    <img id="productImage" src="" alt="Product Image">
-                </div>
-                <div class="product-info-container">
-                    <h3 id="productName"></h3>
-                    <div class="product-specs">
-                        <p><strong>Size:</strong> <span id="productSize"></span></p>
-                        <p><strong>Quantity:</strong> <span id="productQuantity"></span></p>
-                        <p><strong>Price:</strong> <span id="productPrice"></span></p>
-                    </div>
-                </div>
+    <!-- View Order Modal -->
+    <div id="viewOrderModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h2>Order Details</h2>
+            <div id="orderDetails">
+                <p><strong>Product Name:</strong> <span id="modalProductName"></span></p>
+                <p><strong>Size:</strong> <span id="modalSize"></span></p>
+                <p><strong>Quantity:</strong> <span id="modalQuantity"></span></p>
+                <button id="checkInventoryBtn" class="action-btn view-btn" style="margin-top: 10px;">
+                    <i class="fas fa-boxes"></i> Check Inventory
+                </button>
+                <p id="inventoryStatus" style="margin-top: 10px; font-weight: bold;"></p>
+                <button id="tallyOrderBtn" class="action-btn view-btn" style="margin-top: 10px; display: none;">
+                    <i class="fas fa-calculator"></i> Tally Order
+                </button>
+                <p id="tallyResult" style="margin-top: 10px; font-weight: bold;"></p>
+                <hr style="margin: 15px 0;">
+                <h3 style="margin-bottom: 10px;">Buyer Information</h3>
+                <p><strong>Name:</strong> <span id="modalBuyerName"></span></p>
+                <p><strong>Contact:</strong> <span id="modalContact"></span></p>
+                <p><strong>Address:</strong> <span id="modalAddress"></span></p>
             </div>
         </div>
     </div>
-
-    <!-- Add this after your existing product details modal -->
-    <div id="tallyOrderModal" class="modal">
-        <div class="modal-content tally-modal">
-            <span class="close" onclick="closeTallyModal()">&times;</span>
-            <h2>Order Tally</h2>
-            <div class="tally-container">
-                <div class="tally-header">
-                    <h3 id="tallyProductName"></h3>
-                    <p class="order-number">Order #: <span id="tallyOrderId"></span></p>
-                </div>
-                <div class="tally-details">
-                    <div class="tally-row">
-                        <span class="label">Size:</span>
-                        <span id="tallySize" class="value"></span>
-                    </div>
-                    <div class="tally-row">
-                        <span class="label">Quantity:</span>
-                        <span id="tallyQuantity" class="value"></span>
-                    </div>
-                    <div class="tally-row">
-                        <span class="label">Price per piece:</span>
-                        <span id="tallyPricePerSqft" class="value"></span>
-                    </div>
-                    <div class="tally-row total">
-                        <span class="label">Total Amount:</span>
-                        <span id="tallyTotalAmount" class="value"></span>
-                    </div>
-                </div>
-                <div class="tally-actions">
-                    <button class="action-btn save-tally-btn" onclick="saveTallyOrder()">
-                        <i class="fas fa-save"></i> Save Tally
-                    </button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Update the receipt modal -->
     <div id="receiptModal" class="modal">
-        <div class="modal-content receipt-modal">
-            <span class="close" onclick="closeReceiptModal()">&times;</span>
-            <div class="receipt-container">
-                <div class="receipt-header">
-                    <h2>Official Receipt</h2>
-                    <p class="receipt-number">Receipt #: <span id="receiptNumber"></span></p>
-                    <p class="receipt-date">Date: <span id="receiptDate"></span></p>
-                </div>
-                <div class="receipt-body">
-                    <div class="details-row">
-                        <div class="details-column">
-                            <p><strong>Buyer:</strong> <span id="receiptBuyerName"></span></p>
-                            <p><strong>Seller:</strong> <span id="receiptSellerName"></span></p>
-                        </div>
-                    </div>
-                    <div class="details-row">
-                        <div class="details-column">
-                            <p><strong>Product:</strong> <span id="receiptProductName"></span></p>
-                            <p><strong>Size:</strong> <span id="receiptSize"></span></p>
-                            <p><strong>Quantity:</strong> <span id="receiptQuantity"></span></p>
-                            <p class="total-amount"><strong>Total Amount:</strong> <span id="receiptTotalAmount"></span></p>
-                        </div>
-                    </div>
-                </div>
-                <div class="receipt-actions">
-                    <button class="action-btn save-receipt-btn" onclick="saveReceiptData()">
-                        <i class="fas fa-save"></i> Save Receipt
-                    </button>
-                    <button class="action-btn print-receipt-btn" onclick="printReceipt()">
-                        <i class="fas fa-print"></i> Print Receipt
-                    </button>
-                </div>
-            </div>
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <div id="receiptDetails"></div>
         </div>
     </div>
-    <div id="paymentDetailsModal" class="modal">
-    <div class="modal-content payment-details-modal">
-        <span class="close" onclick="closePaymentModal()">&times;</span>
-        <h2>Payment Details</h2>
-        <div class="payment-details-container">
-            <div class="payment-info">
-                <div class="payment-section">
-                    <p><strong>Payment Method:</strong> <span id="paymentMethod"></span></p>
-                    <p><strong>Reference Number:</strong> <span id="referenceNumber"></span></p>
-                    <p><strong>Payment Status:</strong> <span id="paymentStatus"></span></p>
-                    <p><strong>Payment Date:</strong> <span id="paymentDate"></span></p>
-                </div>
-                
-                <!-- GCash specific details -->
-                <div id="gcashDetails" class="payment-section" style="display: none;">
-                    <p><strong>GCash Number:</strong> <span id="gcashNumber"></span></p>
-                    <p><strong>GCash Name:</strong> <span id="gcashName"></span></p>
-                    <p><strong>Screenshot:</strong></p>
-                    <img id="paymentScreenshot" src="" alt="Payment Screenshot">
-                </div>
 
-                <!-- COD specific details -->
-                <div id="codDetails" style="display: none;">
-                    <p><strong>Delivery Address:</strong> <span id="deliveryAddress"></span></p>
-                    <p><strong>Contact Number:</strong> <span id="contactNumber"></span></p>
-                    <p><strong>Delivery Notes:</strong> <span id="deliveryNotes"></span></p>
+    <script>
+        function viewPayment(orderId) {
+    fetch('get_payment_details.php', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            order_id: orderId
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            const modal = document.getElementById('paymentModal');
+            const paymentDetails = document.getElementById('paymentDetails');
+            
+            let proofImage = '';
+            if (data.payment.proof_of_payment) {
+                proofImage = `
+                    <div class="payment-proof">
+                        <h4>Payment Proof</h4>
+                        <img src="${data.payment.proof_of_payment}" alt="Payment Proof">
+                    </div>
+                `;
+            }
+            
+            paymentDetails.innerHTML = `
+                <div class="payment-details">
+                    <h3>Payment Details</h3>
+                    <div class="payment-info">
+                        <p><strong>Payment Method:</strong> ${data.payment.payment_method}</p>
+                        <p><strong>Amount:</strong> ₱${parseFloat(data.payment.amount).toFixed(2)}</p>
+                        <p><strong>Payment Date:</strong> ${new Date(data.payment.payment_date).toLocaleString()}</p>
+                        <p><strong>Payment Status:</strong> ${data.payment.payment_status}</p>
+                    </div>
+                    ${proofImage}
                 </div>
-
-                <!-- Pickup specific details -->
-                <div id="pickupDetails" style="display: none;">
-                    <p><strong>Pickup Date:</strong> <span id="pickupDate"></span></p>
-                    <p><strong>Pickup Time:</strong> <span id="pickupTime"></span></p>
-                    <p><strong>Contact Number:</strong> <span id="pickupContact"></span></p>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-<div id="laborerInfoModal" class="modal">
-    <div class="modal-content laborer-info-modal">
-        <span class="close" onclick="closeLaborerInfoModal()">&times;</span>
-        <div class="laborer-info-content">
-            <h3>Status Updated By</h3>
-            <p id="laborerName"></p>
-            <p id="updateTime"></p>
-        </div>
-    </div>
-</div>
-<script>
+            `;
+            modal.style.display = 'flex';
+        } else {
+            alert('Error loading payment details: ' + (data.error || 'Unknown error'));
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('Error loading payment details');
+    });
+}
+        // Toggle Sidebar
         function toggleSidebar() {
-            const sidebar = document.querySelector('.sidebar');
-            sidebar.classList.toggle('active');
+            document.querySelector('.sidebar').classList.toggle('active');
         }
 
-        // Close sidebar when clicking outside
+        // View Order Details
+        function viewOrder(orderData) {
+            const modal = document.getElementById('viewOrderModal');
+            const productName = document.getElementById('modalProductName');
+            const size = document.getElementById('modalSize');
+            const quantity = document.getElementById('modalQuantity');
+            const buyerName = document.getElementById('modalBuyerName');
+            const contact = document.getElementById('modalContact');
+            const address = document.getElementById('modalAddress');
+            const checkInventoryBtn = document.getElementById('checkInventoryBtn');
+            const inventoryStatus = document.getElementById('inventoryStatus');
+            const tallyOrderBtn = document.getElementById('tallyOrderBtn');
+            const tallyResult = document.getElementById('tallyResult');
+        
+            productName.textContent = orderData.product_name;
+            size.textContent = `${orderData.length_feet}' x ${orderData.width_feet}' x ${orderData.height_feet}'`;
+            quantity.textContent = `${orderData.quantity} pieces`;
+            buyerName.textContent = orderData.buyer_name;
+            contact.textContent = orderData.contact;
+            address.textContent = orderData.address;
+        
+            // Add click event for inventory check
+            checkInventoryBtn.onclick = function() {
+                fetch('check_inventory.php', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        product_name: orderData.product_name,
+                        required_quantity: orderData.quantity
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        if (data.available) {
+                            inventoryStatus.style.color = '#155724';
+                            inventoryStatus.textContent = `✓ Stock Available (${data.available_quantity} pieces in inventory)`;
+                            tallyOrderBtn.style.display = 'inline-block'; // Show tally button
+                        } else {
+                            inventoryStatus.style.color = '#721C24';
+                            inventoryStatus.textContent = `✗ Insufficient Stock (${data.available_quantity} pieces available, ${data.required_quantity} required)`;
+                            tallyOrderBtn.style.display = 'none'; // Hide tally button
+                        }
+                    } else {
+                        inventoryStatus.style.color = '#721C24';
+                        inventoryStatus.textContent = 'Error checking inventory';
+                        tallyOrderBtn.style.display = 'none';
+                    }
+                })
+                .catch(error => {
+                    inventoryStatus.style.color = '#721C24';
+                    inventoryStatus.textContent = 'Error checking inventory';
+                    tallyOrderBtn.style.display = 'none';
+                });
+            };
+        
+            // Add click event for tally order
+            tallyOrderBtn.onclick = function() {
+                fetch('tally_order.php', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        product_name: orderData.product_name,
+                        length_feet: orderData.length_feet,
+                        width_feet: orderData.width_feet,
+                        height_feet: orderData.height_feet,
+                        quantity: orderData.quantity
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        tallyResult.style.color = '#155724';
+                        tallyResult.innerHTML = `
+                            Price per piece: ₱${data.price_per_sqft.toFixed(2)}<br>
+                            Total Price: ₱${data.total_price.toFixed(2)}
+                            <button class="action-btn view-btn" style="margin-top: 10px;" onclick='saveTally(${JSON.stringify(orderData)}, ${data.price_per_sqft}, ${data.total_price})'>
+                                <i class="fas fa-save"></i> Save Tally
+                            </button>
+                        `;
+                    } else {
+                        tallyResult.style.color = '#721C24';
+                        tallyResult.textContent = 'Error calculating order total';
+                    }
+                })
+                .catch(error => {
+                    tallyResult.style.color = '#721C24';
+                    tallyResult.textContent = 'Error calculating order total';
+                });
+            };
+        
+            modal.style.display = 'flex';
+        }
+
+        // Update Order Status
+        function updateStatus(orderId, status) {
+            if (!status) return;
+            
+            if (confirm(`Are you sure you want to update this order to ${status}?`)) {
+                fetch('update_order_status.php', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        order_id: orderId,
+                        status: status
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        alert('Status updated successfully');
+                        location.reload();
+                    } else {
+                        alert('Error updating status');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('Error updating status');
+                });
+            }
+        }
+
+        // Filter Orders
+        document.querySelectorAll('.filter-btn').forEach(button => {
+            button.addEventListener('click', function() {
+                document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('active'));
+                this.classList.add('active');
+                
+                const status = this.dataset.status;
+                const rows = document.querySelectorAll('.orders-table tbody tr');
+                
+                rows.forEach(row => {
+                    const orderStatus = row.querySelector('.status-badge').textContent.toLowerCase();
+                    if (status === 'all' || orderStatus.includes(status.toLowerCase())) {
+                        row.style.display = '';
+                    } else {
+                        row.style.display = 'none';
+                    }
+                });
+            });
+        });
+
+        // Close Modal
+        document.querySelectorAll('.close').forEach(closeBtn => {
+            closeBtn.addEventListener('click', function() {
+                this.closest('.modal').style.display = 'none';
+            });
+        });
+
+        // Close Modal When Clicking Outside
+        window.addEventListener('click', function(event) {
+            if (event.target.classList.contains('modal')) {
+                event.target.style.display = 'none';
+            }
+        });
+
+        // Close Sidebar When Clicking Outside (Mobile)
         document.addEventListener('click', function(event) {
             const sidebar = document.querySelector('.sidebar');
             const burgerMenu = document.querySelector('.burger-menu');
@@ -1094,519 +970,220 @@ $notifications = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 sidebar.classList.remove('active');
             }
         });
-    </script>
-
-    <script>
+        function saveTally(orderData, price, totalAmount) {
+            console.log('Saving tally with data:', {
+                order_id: orderData.reference_id,
+                product_name: orderData.product_name,
+                length_feet: orderData.length_feet,
+                width_feet: orderData.width_feet,
+                height_feet: orderData.height_feet,
+                quantity: orderData.quantity,
+                price_per_sqft: price,
+                total_amount: totalAmount
+            });
         
-    // Add this JavaScript for updating order status
-    function updateOrderStatus(orderId, status) {
-        if (!status) return; // Don't proceed if no status is selected
-        
-        if (!confirm(`Are you sure you want to update this order to ${status}?`)) {
-            // Reset the select element to its placeholder
-            event.target.value = "";
-            return;
-        }
-
-        fetch('update_order_status.php', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                order_id: orderId,
-                status: status
+            fetch('save_tally.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    order_id: orderData.reference_id,
+                    product_name: orderData.product_name,
+                    length_feet: orderData.length_feet,
+                    width_feet: orderData.width_feet,
+                    height_feet: orderData.height_feet,
+                    quantity: orderData.quantity,
+                    price_per_sqft: price,
+                    total_amount: totalAmount
+                })
             })
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                alert('Order status updated successfully');
-                location.reload(); // Reload to show updated status
-            } else {
-                alert('Error updating order status: ' + data.message);
-                // Reset the select element to its placeholder
-                event.target.value = "";
-            }
-        })
-        .catch(error => {
-            console.error('Error:', error);
-            alert('Error updating order status');
-            // Reset the select element to its placeholder
-            event.target.value = "";
-        });
-    }
-
-    // Filter orders
-    function filterOrders(status) {
-        const rows = document.querySelectorAll('.orders-table tbody tr');
-        rows.forEach(row => {
-            const orderStatus = row.querySelector('.status-badge').textContent.trim().toLowerCase();
-            
-            if (status === 'all') {
-                row.style.display = '';
-            } else if (status === 'pending orders' && (orderStatus === 'pending' || orderStatus === 'ordered' || orderStatus === 'pending orders')) {
-                // Show both Pending and Ordered status orders
-                row.style.display = '';
-            } else if (orderStatus === status.toLowerCase()) {
-                row.style.display = '';
-            } else {
-                row.style.display = 'none';
-            }
-        });
-    }
-
-    // Update the filter buttons click handler
-    document.querySelectorAll('.filter-btn').forEach(button => {
-        button.addEventListener('click', function() {
-            // Remove active class from all buttons
-            document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('active'));
-            // Add active class to clicked button
-            this.classList.add('active');
-            
-            // Get the status from the button's data attribute
-            const status = this.dataset.status;
-            filterOrders(status);
-        });
-    });
-
-    function viewOrderDetails(notificationId, buyerId) {
-        // Mark as read when viewing
-        markAsRead(notificationId);
-        
-        // Fetch order details
-        fetch(`get_order_details.php?buyer_id=${buyerId}`)
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    // Display order details (implement your modal or preferred display method)
-                    alert('Order details: ' + JSON.stringify(data.details));
+                    alert('Order tally saved successfully!');
+                    location.reload();
                 } else {
-                    alert('Error loading order details: ' + data.message);
+                    alert('Error saving order tally: ' + (data.error || 'Unknown error'));
                 }
             })
             .catch(error => {
                 console.error('Error:', error);
-                alert('Error loading order details');
+                alert('Error saving order tally: ' + error.message);
             });
+        }
+        function viewTally(orderId) {
+            fetch('view_tally.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    order_id: orderId
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    const modal = document.getElementById('viewOrderModal');
+                    const tallyDetails = document.getElementById('orderDetails');
+                    tallyDetails.innerHTML = `
+                        <h3>Tally Details</h3>
+                        <p><strong>Product Name:</strong> ${data.tally.product_name}</p>
+                        <p><strong>Size:</strong> ${data.tally.length_feet}' x ${data.tally.width_feet}' x ${data.tally.height_feet}'</p>
+                        <p><strong>Quantity:</strong> ${data.tally.quantity} pieces</p>
+                        <p><strong>Price per piece:</strong> ₱${parseFloat(data.tally.price_per_sqft).toFixed(2)}</p>
+                        <p><strong>Total Amount:</strong> ₱${parseFloat(data.tally.total_amount).toFixed(2)}</p>
+                        <p><strong>Date Tallied:</strong> ${new Date(data.tally.created_at).toLocaleString()}</p>
+                        <button class="create-receipt-btn" onclick="createReceipt({
+                            reference_id: ${orderId},
+                            product_name: '${data.tally.product_name}',
+                            length_feet: ${data.tally.length_feet},
+                            width_feet: ${data.tally.width_feet},
+                            height_feet: ${data.tally.height_feet},
+                            quantity: ${data.tally.quantity},
+                            total_amount: ${data.tally.total_amount},
+                            buyer_name: '${data.tally.buyer_name}'
+                        })">
+                            <i class="fas fa-file-invoice"></i> Create Receipt
+                        </button>
+                    `;
+                    modal.style.display = 'flex';
+                } else {
+                    alert('Error loading tally details: ' + (data.error || 'Unknown error'));
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Error loading tally details');
+            });
+        }
+    function viewTallyDetails(order) {
+        const modal = document.getElementById('orderDetailsModal');
+        const modalContent = modal.querySelector('.modal-content');
+        
+        modalContent.innerHTML = `
+            <span class="close-modal" onclick="closeOrderDetails()">&times;</span>
+            <h3>Tally Details</h3>
+            <div class="tally-details">
+                <p><strong>Product Name:</strong> ${order.product_name}</p>
+                <p><strong>Size:</strong> ${order.length_feet}' x ${order.width_feet}' x ${order.height_feet}'</p>
+                <p><strong>Quantity:</strong> ${order.quantity} pieces</p>
+                <p><strong>Price per piece:</strong> ₱${parseFloat(order.price_per_sqft).toFixed(2)}</p>
+                <p><strong>Total Amount:</strong> ₱${parseFloat(order.total_amount).toFixed(2)}</p>
+                <p><strong>Date Tallied:</strong> ${new Date(order.created_at).toLocaleString()}</p>
+            </div>
+            <button class="create-receipt-btn" onclick="createReceipt(${JSON.stringify(order)})">
+                <i class="fas fa-file-invoice"></i> Create Receipt
+            </button>
+        `;
+        
+        modal.style.display = 'flex';
     }
-
-    function markAsRead(notificationId) {
-        fetch('mark_notification_read.php', {
+    
+    function createReceipt(order) {
+        const receiptNumber = 'RCP-' + Date.now();
+        const currentDate = new Date().toISOString().slice(0, 19).replace('T', ' ');
+        
+        fetch('create_receipt.php', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-                notification_id: notificationId
+                receipt_number: receiptNumber,
+                order_id: order.reference_id,
+                product_name: order.product_name,
+                size: `${order.length_feet}' x ${order.width_feet}' x ${order.height_feet}'`,
+                quantity: order.quantity,
+                total_amount: order.total_amount,
+                buyer_name: order.buyer_name,
+                receipt_date: currentDate
             })
         })
         .then(response => response.json())
         .then(data => {
             if (data.success) {
-                // Remove unread styling
-                const row = document.querySelector(`tr:has(button[onclick*="${notificationId}"])`);
-                if (row) {
-                    row.classList.remove('unread-notification');
-                    const dot = row.querySelector('.notification-dot');
-                    if (dot) dot.remove();
-                }
-            }
-        })
-        .catch(error => {
-            console.error('Error:', error);
-        });
-    }
-
-    function checkInProduct(productName, length, width, height, quantity, pricePerSqft, orderId) {
-        console.log('Checking product:', { productName, length, width, height, quantity }); // Debug log
-
-        // Fetch product details from my_products.php
-        fetch('get_product_details.php', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                product_name: productName,
-                length_feet: length,
-                width_feet: width,
-                height_feet: height
-            })
-        })
-        .then(response => response.json())
-        .then(data => {
-            console.log('Received data:', data); // Debug log
-
-            if (data.success) {
-                // Update modal with product details
-                const modal = document.getElementById('productDetailsModal');
-                const productImage = document.getElementById('productImage');
-                const productNameEl = document.getElementById('productName');
-                const productSize = document.getElementById('productSize');
-                const productQuantity = document.getElementById('productQuantity');
-                const productPrice = document.getElementById('productPrice');
-
-                // Set image with fallback
-                productImage.src = data.image_path || 'images/default-product.jpg';
-                productImage.onerror = function() {
-                    this.src = 'images/default-product.jpg';
-                };
-
-                // Set other details
-                productNameEl.textContent = data.product_name;
-                productSize.textContent = `${length}' x ${width}' x ${height}'`;
-                productQuantity.textContent = `${quantity} pieces`;
-                
-                // Format price with commas and 2 decimal places
-                const formattedPrice = parseFloat(data.price_per_sqft).toLocaleString('en-PH', {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2
-                });
-                productPrice.textContent = `₱${formattedPrice} per sq.ft`;
-
-                // Create buttons container
-                const buttonsContainer = document.createElement('div');
-                buttonsContainer.className = 'modal-actions';
-
-                // Create Tally Order button
-                const tallyButton = document.createElement('button');
-                tallyButton.className = 'action-btn tally-order-btn';
-                tallyButton.innerHTML = '<i class="fas fa-calculator"></i> Tally Order';
-                tallyButton.onclick = () => {
-                    closeProductModal();
-                    showTallyModal(productName, length, width, height, quantity, pricePerSqft, orderId);
-                };
-
-                // Create Check in My Products button
-                const checkProductsButton = document.createElement('button');
-                checkProductsButton.className = 'action-btn check-products-btn';
-                checkProductsButton.innerHTML = '<i class="fas fa-search"></i> Check in My Products';
-                checkProductsButton.onclick = () => {
-                    // Store the product name in sessionStorage to highlight it on the next page
-                    sessionStorage.setItem('highlightProduct', productName);
-                    window.location.href = 'my_products.php';
-                };
-
-                // Add buttons to container
-                buttonsContainer.appendChild(tallyButton);
-                buttonsContainer.appendChild(checkProductsButton);
-
-                // Add the buttons container to the modal
-                const modalContent = document.querySelector('.product-details-modal');
-                // Remove any existing buttons container
-                const existingButtons = modalContent.querySelector('.modal-actions');
-                if (existingButtons) {
-                    existingButtons.remove();
-                }
-                modalContent.appendChild(buttonsContainer);
-
-                // Show modal
-                modal.style.display = 'flex';
-            } else {
-                alert(data.message || 'Error loading product details');
-            }
-        })
-        .catch(error => {
-            console.error('Error:', error);
-            alert('Error loading product details. Please try again.');
-        });
-    }
-
-    // Update the modal close function
-    function closeProductModal() {
-        const modal = document.getElementById('productDetailsModal');
-        modal.style.display = 'none';
-    }
-
-    // Close modal when clicking outside
-    window.onclick = function(event) {
-        if (event.target.classList.contains('modal')) {
-            if (event.target.id === 'productDetailsModal') {
-                closeProductModal();
-            } else if (event.target.id === 'receiptModal') {
-                closeReceiptModal();
-            }
-        }
-    }
-
-    // Add this JavaScript function after your existing JavaScript code
-    function showTallyModal(productName, length, width, height, quantity, pricePerSqft, orderId) {
-        // Calculate total amount based on quantity and price
-        const totalAmount = quantity * pricePerSqft;
-
-        // Update tally modal content
-        document.getElementById('tallyProductName').textContent = productName;
-        document.getElementById('tallyOrderId').textContent = orderId;
-        document.getElementById('tallySize').textContent = `${length}' x ${width}' x ${height}'`;
-        document.getElementById('tallyQuantity').textContent = `${quantity} pieces`;
-        document.getElementById('tallyPricePerSqft').textContent = `₱${pricePerSqft.toFixed(2)}`;
-        document.getElementById('tallyTotalAmount').textContent = `₱${totalAmount.toFixed(2)}`;
-
-        // Store data for saving
-        window.currentTallyData = {
-            order_id: orderId,
-            product_name: productName,
-            length_feet: length,
-            width_feet: width,
-            height_feet: height,
-            quantity: quantity,
-            price_per_sqft: pricePerSqft,
-            total_amount: totalAmount
-        };
-
-        // Show the modal
-        document.getElementById('tallyOrderModal').style.display = 'flex';
-    }
-
-    function saveTallyOrder() {
-        if (!window.currentTallyData) {
-            alert('No tally data available');
-            return;
-        }
-
-        fetch('save_tally_order.php', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(window.currentTallyData)
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                alert('Tally order saved successfully');
-                closeTallyModal();
-                // Reload the page to update the buttons
+                alert('Receipt created successfully!');
                 location.reload();
             } else {
-                alert('Error saving tally order: ' + (data.message || 'Unknown error'));
+                alert('Error creating receipt: ' + (data.error || 'Unknown error'));
             }
         })
         .catch(error => {
             console.error('Error:', error);
-            alert('Error saving tally order');
+            alert('Error creating receipt');
         });
     }
-
-    function closeTallyModal() {
-        document.getElementById('tallyOrderModal').style.display = 'none';
-        window.currentTallyData = null;
-    }
-    function createReceipt(orderId) {
-    // Store the order ID globally for receipt creation
-    window.currentReceiptOrderId = orderId;
-    
-    fetch('get_tally_details.php?order_id=' + orderId)
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                // Populate receipt modal with tally details
-                document.getElementById('receiptNumber').textContent = generateReceiptNumber();
-                document.getElementById('receiptDate').textContent = new Date().toLocaleDateString();
-                document.getElementById('receiptBuyerName').textContent = data.buyer_name;
-                document.getElementById('receiptSellerName').textContent = data.seller_name;
-                document.getElementById('receiptProductName').textContent = data.product_name;
-                document.getElementById('receiptSize').textContent = `${data.length_feet}' x ${data.width_feet}' x ${data.height_feet}'`;
-                document.getElementById('receiptQuantity').textContent = `${data.quantity} pieces`;
-                document.getElementById('receiptTotalAmount').textContent = `₱${parseFloat(data.total_amount).toFixed(2)}`;
-
-                // Show receipt modal
-                document.getElementById('receiptModal').style.display = 'flex';
-            } else {
-                alert('Error loading tally details: ' + data.message);
-            }
-        })
-        .catch(error => {
-            console.error('Error:', error);
-            alert('Error loading tally details');
-        });
-}
-    function generateReceiptNumber() {
-        // Generate a unique receipt number (you can modify this format)
-        const date = new Date();
-        const year = date.getFullYear();
-        const month = String(date.getMonth() + 1).padStart(2, '0');
-        const day = String(date.getDate()).padStart(2, '0');
-        const random = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
-        return `RCP-${year}${month}${day}-${random}`;
-    }
-
-    function closeReceiptModal() {
-        document.getElementById('receiptModal').style.display = 'none';
-    }
-    function saveReceiptData() {
-    // Get all the receipt data from the modal
-    const receiptData = {
-        receipt_number: document.getElementById('receiptNumber').textContent,
-        order_id: window.currentReceiptOrderId, // Use the stored order ID
-        product_name: document.getElementById('receiptProductName').textContent,
-        size: document.getElementById('receiptSize').textContent,
-        quantity: document.getElementById('receiptQuantity').textContent.replace(' pieces', ''),
-        total_amount: document.getElementById('receiptTotalAmount').textContent.replace('₱', '').trim(),
-        buyer_name: document.getElementById('receiptBuyerName').textContent,
-        seller_name: document.getElementById('receiptSellerName').textContent,
-        receipt_date: document.getElementById('receiptDate').textContent
-    };
-
-    // Send the data to the server
-    fetch('save_receipt.php', {
+    function viewReceipt(orderId) {
+    fetch('get_receipt.php', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
         },
-        body: JSON.stringify(receiptData)
+        body: JSON.stringify({
+            order_id: orderId
+        })
     })
     .then(response => response.json())
     .then(data => {
         if (data.success) {
-            alert('Receipt saved successfully');
-            closeReceiptModal();
-            location.reload(); // Reload to update the UI
+            const modal = document.getElementById('receiptModal');
+            const receiptDetails = document.getElementById('receiptDetails');
+            receiptDetails.innerHTML = `
+    <div class="receipt-container">
+        <div class="receipt-header">
+            <h2>SALES RECEIPT</h2>
+            <p class="receipt-number">Receipt No: ${data.receipt.receipt_number}</p>
+            <p class="receipt-date">Date: ${new Date(data.receipt.receipt_date).toLocaleDateString()}</p>
+        </div>
+        <div class="receipt-info">
+            <p><strong>Seller:</strong> ${data.receipt.seller_firstname} ${data.receipt.seller_lastname}</p>
+            <p><strong>Buyer:</strong> ${data.receipt.buyer_name}</p>
+        </div>
+        <table class="receipt-table">
+            <thead>
+                <tr>
+                    <th>Qty</th>
+                    <th>Description</th>
+                    <th>Price</th>
+                    <th>Amount</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>${data.receipt.quantity}</td>
+                    <td>${data.receipt.product_name}<br>${data.receipt.size}</td>
+                    <td>₱${parseFloat(data.receipt.total_amount/data.receipt.quantity).toFixed(2)}</td>
+                    <td>₱${parseFloat(data.receipt.total_amount).toFixed(2)}</td>
+                </tr>
+            </tbody>
+        </table>
+        <div class="receipt-summary">
+            <div class="receipt-totals">
+                <p><span>Subtotal:</span> <span>₱${parseFloat(data.receipt.total_amount).toFixed(2)}</span></p>
+                <p><span>Tax:</span> <span>₱0.00</span></p>
+                <p class="total"><span>Total:</span> <span>₱${parseFloat(data.receipt.total_amount).toFixed(2)}</span></p>
+            </div>
+        </div>
+    </div>
+`;
+            modal.style.display = 'flex';
         } else {
-            alert('Error saving receipt: ' + (data.message || 'Unknown error'));
+            alert('Error loading receipt: ' + (data.error || 'Unknown error'));
         }
     })
     .catch(error => {
         console.error('Error:', error);
-        alert('Error saving receipt');
+        alert('Error loading receipt');
     });
 }
-function viewReceipt(orderId) {
-    fetch('get_receipt.php?order_id=' + orderId)
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                // Populate receipt modal with saved receipt details
-                document.getElementById('receiptNumber').textContent = data.receipt.receipt_number;
-                document.getElementById('receiptDate').textContent = data.receipt.receipt_date;
-                document.getElementById('receiptBuyerName').textContent = data.receipt.buyer_name;
-                document.getElementById('receiptSellerName').textContent = data.receipt.seller_name;
-                document.getElementById('receiptProductName').textContent = data.receipt.product_name;
-                document.getElementById('receiptSize').textContent = data.receipt.size;
-                document.getElementById('receiptQuantity').textContent = data.receipt.quantity + ' pieces';
-                document.getElementById('receiptTotalAmount').textContent = '₱' + parseFloat(data.receipt.total_amount).toFixed(2);
-
-                // Show receipt modal
-                document.getElementById('receiptModal').style.display = 'flex';
-            } else {
-                alert('Error loading receipt: ' + data.message);
-            }
-        })
-        .catch(error => {
-            console.error('Error:', error);
-            alert('Error loading receipt');
-        });
-}
-function viewPaymentDetails(orderId) {
-    fetch('get_payment_details.php?order_id=' + orderId)
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                // Update modal with payment details
-                document.getElementById('paymentMethod').textContent = data.payment.payment_method;
-                document.getElementById('referenceNumber').textContent = data.payment.reference_number;
-                document.getElementById('paymentStatus').textContent = data.payment.payment_status;
-                document.getElementById('paymentDate').textContent = new Date(data.payment.payment_date).toLocaleString();
-
-                // Hide all specific details sections first
-                document.getElementById('gcashDetails').style.display = 'none';
-                document.getElementById('codDetails').style.display = 'none';
-                document.getElementById('pickupDetails').style.display = 'none';
-
-                // Show specific details based on payment method
-                switch(data.payment.payment_method) {
-                    case 'gcash':
-                        document.getElementById('gcashDetails').style.display = 'block';
-                        document.getElementById('gcashNumber').textContent = data.payment.gcash_number || 'Not provided';
-                        document.getElementById('gcashName').textContent = data.payment.gcash_name || 'Not provided';
-                        if (data.payment.screenshot_path) {
-                            document.getElementById('paymentScreenshot').src = data.payment.screenshot_path;
-                            document.getElementById('paymentScreenshot').style.display = 'block';
-                        } else {
-                            document.getElementById('paymentScreenshot').style.display = 'none';
-                        }
-                        break;
-
-                    case 'cod':
-                        document.getElementById('codDetails').style.display = 'block';
-                        document.getElementById('deliveryAddress').textContent = data.payment.delivery_address || 'Not provided';
-                        document.getElementById('contactNumber').textContent = data.payment.contact_number || 'Not provided';
-                        document.getElementById('deliveryNotes').textContent = data.payment.delivery_notes || 'No notes provided';
-                        break;
-
-                    case 'pickup':
-                        document.getElementById('pickupDetails').style.display = 'block';
-                        const pickupDate = data.payment.pickup_date ? new Date(data.payment.pickup_date) : null;
-                        const formattedDate = pickupDate ? pickupDate.toLocaleDateString('en-US', {
-                            year: 'numeric',
-                            month: 'long',
-                            day: 'numeric'
-                        }) : 'Not scheduled';
-
-                        let formattedTime = 'Not scheduled';
-                        if (data.payment.pickup_time) {
-                            const timeArr = data.payment.pickup_time.split(':');
-                            const hours = parseInt(timeArr[0]);
-                            const minutes = timeArr[1];
-                            const ampm = hours >= 12 ? 'PM' : 'AM';
-                            const formattedHours = hours % 12 || 12;
-                            formattedTime = `${formattedHours}:${minutes} ${ampm}`;
-                        }
-
-                        document.getElementById('pickupDate').textContent = formattedDate;
-                        document.getElementById('pickupTime').textContent = formattedTime;
-                        document.getElementById('pickupContact').textContent = data.payment.contact_number || 'Not provided';
-                        break;
-                }
-
-                // Add product notes if available
-                if (data.payment.product_notes) {
-                    const notesElement = document.createElement('div');
-                    notesElement.className = 'payment-section';
-                    notesElement.innerHTML = `
-                        <p><strong>Product Notes:</strong></p>
-                        <p>${data.payment.product_notes}</p>
-                    `;
-                    document.querySelector('.payment-info').appendChild(notesElement);
-                }
-
-                // Show the modal
-                document.getElementById('paymentDetailsModal').style.display = 'flex';
-            } else {
-                alert('Error loading payment details: ' + data.message);
-            }
-        })
-        .catch(error => {
-            console.error('Error:', error);
-            alert('Error loading payment details');
-        });
-}
-
-function closePaymentModal() {
-    document.getElementById('paymentDetailsModal').style.display = 'none';
-}
-function viewLaborerInfo(orderId) {
-        fetch('get_laborer_info.php?order_id=' + orderId)
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    document.getElementById('laborerName').textContent = data.laborer_name;
-                    document.getElementById('updateTime').textContent = data.update_time;
-                    document.getElementById('laborerInfoModal').style.display = 'flex';
-                } else {
-                    alert('Error: ' + data.message);
-                }
-            })
-            .catch(error => {
-                console.error('Error:', error);
-                alert('Error loading laborer information');
-            });
-    }
-
-    function closeLaborerInfoModal() {
-        document.getElementById('laborerInfoModal').style.display = 'none';
-    }
     </script>
-</body>
+    
+    <div id="paymentModal" class="modal">
+    <div class="modal-content">
+        <span class="close">&times;</span>
+        <div id="paymentDetails"></div>
+    </div>
+</div>
 </html>

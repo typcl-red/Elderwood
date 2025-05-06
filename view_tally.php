@@ -13,24 +13,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     
     try {
         $stmt = $pdo->prepare("
-            SELECT r.*, u.firstname as seller_firstname, u.lastname as seller_lastname 
-            FROM receipt r
-            JOIN users u ON r.seller_id = u.id
-            WHERE r.order_id = :order_id
+            SELECT co.*, u.firstname, u.lastname 
+            FROM cus_orders co
+            JOIN order_list ol ON co.order_id = ol.order_id
+            JOIN users u ON ol.buyer_id = u.id
+            WHERE co.order_id = :order_id
         ");
         
         $stmt->execute(['order_id' => $data['order_id']]);
-        $receipt = $stmt->fetch(PDO::FETCH_ASSOC);
+        $tally = $stmt->fetch(PDO::FETCH_ASSOC);
         
-        if ($receipt) {
+        if ($tally) {
+            $tally['buyer_name'] = $tally['firstname'] . ' ' . $tally['lastname'];
             header('Content-Type: application/json');
             echo json_encode([
                 'success' => true,
-                'receipt' => $receipt
+                'tally' => $tally
             ]);
         } else {
             header('Content-Type: application/json');
-            echo json_encode(['error' => 'Receipt not found']);
+            echo json_encode(['error' => 'Tally not found']);
         }
         
     } catch (PDOException $e) {
